@@ -4,13 +4,17 @@ import random
 import sys
 import json
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pymongo import MongoClient
 from bson import ObjectId
 import logging
-from prometheus_client import Counter, Summary, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
-from azure.storage.blob import BlobServiceClient
+from prometheus_client import Counter, Summary, Histogram, generate_latest, CONTENT_TYPE_LATEST
+import boto3
+from botocore.exceptions import NoCredentialsError, ClientError
 from flask import Flask
+from dotenv import load_dotenv
+
+load_dotenv()  # Load environment variables from .env file
 
 # Configure logging
 logging.basicConfig(
@@ -21,252 +25,116 @@ logger = logging.getLogger(__name__)
 
 class DocumentDownloader:
     def __init__(self):
-        # MongoDB setup
         self.mongo_uri = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
-        self.client = MongoClient(self.mongo_uri)
-        self.db = self.client["filesure"]
-        self.collection = self.db["jobs"]
-        self.docs_collection = self.db["documents"]
+        self.db_name = "filesure"
+        self.collection_name = "jobs"
+        self.aws_access_key_id = os.environ.get("AWS_ACCESS_KEY_ID")
+        self.aws_secret_access_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
+        self.aws_region = os.environ.get("AWS_REGION", "ap-south-1")
+        self.aws_bucket = os.environ.get("AWS_BUCKET_NAME", "filesure-documents")
         
-        # Azure Blob Storage setup
-        self.blob_connection_string = os.environ.get("AZURE_BLOB_CONN")
-        self.blob_container = os.environ.get("AZURE_CONTAINER", "documents")
-        self.blob_client = None
+        # Initialize MongoDB client
+        try:
+            self.client = MongoClient(self.mongo_uri)
+            self.db = self.client[self.db_name]
+            self.collection = self.db[self.collection_name]
+            logger.info("Collections setup: collection jobs already exists")
+        except Exception as e:
+            logger.error(f"Failed to initialize MongoDB: {e}")
+            sys.exit(1)
         
-        if self.blob_connection_string:
-            try:
-                self.blob_service_client = BlobServiceClient.from_connection_string(self.blob_connection_string)
-                logger.info("Azure Blob Storage client initialized")
-            except Exception as e:
-                logger.warning(f"Azure Blob Storage not configured: {e}")
-                self.blob_service_client = None
-        else:
-            logger.warning("Azure Blob Storage connection string not provided")
-            self.blob_service_client = None
+        # Initialize AWS S3 client
+        try:
+            if not all([self.aws_access_key_id, self.aws_secret_access_key, self.aws_region, self.aws_bucket]):
+                logger.warning("AWS S3 configuration not provided")
+                self.s3_client = None
+            else:
+                self.s3_client = boto3.client(
+                    's3',
+                    aws_access_key_id=self.aws_access_key_id,
+                    aws_secret_access_key=self.aws_secret_access_key,
+                    region_name=self.aws_region
+                )
+                logger.info(f"AWS S3 client initialized for bucket: {self.aws_bucket}")
+        except NoCredentialsError:
+            logger.error("Invalid AWS credentials")
+            self.s3_client = None
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Failed to initialize AWS S3 client: {e}")
+            self.s3_client = None
+            sys.exit(1)
         
         # Prometheus metrics
-        self.jobs_processed = Counter('jobs_processed_total', 'Total number of jobs processed', ['status'])
-        self.jobs_found = Counter('jobs_found_total', 'Total number of jobs found in each cycle')
-        self.jobs_locked = Counter('jobs_locked_total', 'Total number of jobs successfully locked')
-        self.jobs_failed = Counter('jobs_failed_total', 'Total number of jobs that failed processing')
-        self.documents_downloaded = Counter('documents_downloaded_total', 'Total number of documents downloaded')
-        self.documents_uploaded = Counter('documents_uploaded_total', 'Total number of documents uploaded to blob storage')
-        self.blob_operations = Counter('blob_operations_total', 'Total blob storage operations', ['operation'])
-        self.blob_operation_time = Summary('blob_operation_duration_seconds', 'Time spent on blob operations', ['operation'])
-        self.processing_time = Summary('job_processing_duration_seconds', 'Time spent processing jobs')
-        self.lock_cleanup = Counter('lock_cleanup_total', 'Total number of expired locks cleaned up')
-        self.active_jobs = Gauge('active_jobs', 'Number of jobs currently being processed')
-        self.pending_jobs = Gauge('pending_jobs', 'Number of jobs waiting to be processed')
-        self.completed_jobs = Gauge('completed_jobs', 'Number of jobs completed')
-        self.download_batch_size = Histogram('download_batch_size', 'Number of documents downloaded per batch')
-        
-        # Ensure database and collections exist
-        try:
-            # This will create the collections if they don't exist
-            self.db.create_collection("jobs")
-            self.db.create_collection("documents")
-            
-            # Create index for lock expiration queries
-            try:
-                self.collection.create_index("lockedAt")
-                logger.info("Index created for lock expiration queries")
-            except Exception as e:
-                logger.info(f"Index setup: {e}")
-                
-            logger.info("Database and collections setup completed")
-        except Exception as e:
-            # Collections might already exist, which is fine
-            logger.info(f"Collections setup: {e}")
+        self.jobs_processed = Counter(
+            'jobs_processed_total',
+            'Total number of jobs processed',
+            ['status']
+        )
+        self.jobs_failed = Counter(
+            'jobs_failed_total',
+            'Total number of jobs that failed'
+        )
+        self.documents_downloaded = Counter(
+            'documents_downloaded_total',
+            'Total number of documents downloaded'
+        )
+        self.download_batch_size = Histogram(
+            'download_batch_size',
+            'Number of documents downloaded per batch'
+        )
+        self.blob_operations = Counter(
+            'blob_operations_total',
+            'Total number of blob operations (upload/download)',
+            ['operation']
+        )
+        self.processing_time = Summary(
+            'job_processing_time_seconds',
+            'Time spent processing jobs'
+        )
         
         logger.info("Document Downloader initialized")
     
-    def get_job_by_id(self, job_id):
-        """Get a specific job by ID and try to acquire lock"""
+    def _upload_document_to_s3(self, job_id, doc_num, company_name, cin):
+        """Simulate uploading a document to AWS S3"""
+        if not self.s3_client:
+            logger.error("AWS S3 client not initialized, cannot upload document")
+            return None
+        
         try:
-            # Convert string job_id to ObjectId
-            try:
-                object_id = ObjectId(job_id)
-            except Exception as e:
-                logger.error(f"Invalid job ID format: {job_id}")
-                return None
-            
-            # Try to acquire lock on the specific job
-            job = self.collection.find_one_and_update(
-                {"_id": object_id, "jobStatus": "pending"},
-                {
-                    "$set": {
-                        "jobStatus": "processing",
-                        "processingStages.documentDownload.status": "processing",
-                        "processingStages.documentDownload.lastUpdated": datetime.utcnow(),
-                        "updatedAt": datetime.utcnow(),
-                        "lockedBy": f"downloader-{os.getpid()}-{int(time.time())}",
-                        "lockedAt": datetime.utcnow()
-                    }
-                },
-                return_document=True
+            key = f"jobs/{job_id}/document_{doc_num}.txt"
+            content = f"Document {doc_num} for {company_name} (CIN: {cin})"
+            self.s3_client.put_object(
+                Bucket=self.aws_bucket,
+                Key=key,
+                Body=content.encode('utf-8')
             )
-            
-            if job:
-                self.jobs_locked.inc()
-                self.active_jobs.inc()
-                logger.info(f"Acquired lock on job {job['_id']} for {job.get('companyName', 'Unknown')}")
-                return job
-            else:
-                logger.warning(f"Job {job_id} not found or not in pending status")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error getting job {job_id}: {e}")
+            blob_url = f"https://{self.aws_bucket}.s3.{self.aws_region}.amazonaws.com/{key}"
+            self.blob_operations.labels(operation='upload').inc()
+            logger.info(f"Uploaded document {doc_num} to AWS S3: {key}")
+            return blob_url
+        except ClientError as e:
+            logger.error(f"Failed to upload document {doc_num} to AWS S3: {e}")
             return None
     
-    def _cleanup_expired_locks(self):
-        """Clean up locks that are older than 10 minutes"""
+    def _save_document_to_mongodb(self, job_id, doc_num, company_name, cin, blob_url):
+        """Save document metadata to MongoDB"""
         try:
-            cutoff_time = datetime.utcnow() - timedelta(minutes=10)
-            result = self.collection.update_many(
-                {
-                    "jobStatus": "processing",
-                    "lockedAt": {"$lt": cutoff_time}
-                },
-                {
-                    "$set": {
-                        "jobStatus": "pending",
-                        "processingStages.documentDownload.status": "pending",
-                        "processingStages.documentDownload.lastUpdated": datetime.utcnow(),
-                        "updatedAt": datetime.utcnow()
-                    },
-                    "$unset": {
-                        "lockedBy": "",
-                        "lockedAt": ""
-                    }
-                }
-            )
-            
-            if result.modified_count > 0:
-                self.lock_cleanup.inc(result.modified_count)
-                logger.info(f"Cleaned up {result.modified_count} expired locks")
-                
-        except Exception as e:
-            logger.error(f"Error cleaning up expired locks: {e}")
-    
-    def _update_job_counts(self):
-        """Update job count metrics"""
-        try:
-            pending_count = self.collection.count_documents({"jobStatus": "pending"})
-            active_count = self.collection.count_documents({"jobStatus": "processing"})
-            completed_count = self.collection.count_documents({"jobStatus": "completed"})
-            
-            self.pending_jobs.set(pending_count)
-            self.active_jobs.set(active_count)
-            self.completed_jobs.set(completed_count)
-            
-        except Exception as e:
-            logger.error(f"Error updating job counts: {e}")
-    
-    def _generate_document_content(self, job_id, doc_number, company_name, cin):
-        """Generate simulated document content as text file"""
-        document_types = ["Annual Report", "Financial Statement", "Compliance Document", "Board Resolution", "Tax Filing"]
-        doc_type = random.choice(document_types)
-        
-        content = f"""
-COMPANY DOCUMENT - {doc_type}
-========================================
-
-Company Name: {company_name}
-Corporate Identity Number (CIN): {cin}
-Document Number: {doc_number}
-Document Type: {doc_type}
-Generated Date: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}
-
-========================================
-DOCUMENT CONTENT
-========================================
-
-This is a simulated {doc_type.lower()} for {company_name}.
-
-Document Details:
-- File Size: {random.randint(1024, 10240)} bytes
-- Checksum: MD5-{random.randint(100000, 999999)}
-- Processing Job ID: {job_id}
-
-Content Summary:
-This document contains important business information for {company_name}
-registered under CIN {cin}. The document was processed as part of the
-automated document download system.
-
-========================================
-Document Footer - Generated by FileSure
-========================================
-        """.strip()
-        
-        return content
-    
-    def _save_document_to_mongodb(self, job_id, doc_number, company_name, cin, blob_url=None):
-        """Save document metadata to MongoDB documents collection"""
-        try:
-            document_types = ["Annual Report", "Financial Statement", "Compliance Document", "Board Resolution", "Tax Filing"]
-            doc_type = random.choice(document_types)
-            
-            doc_metadata = {
+            document = {
                 "jobId": job_id,
-                "documentNumber": doc_number,
+                "documentNumber": doc_num,
                 "companyName": company_name,
                 "cin": cin,
-                "documentType": doc_type,
-                "fileName": f"document_{doc_number}.txt",
                 "blobUrl": blob_url,
-                "fileSize": random.randint(1024, 10240),
-                "checksum": f"MD5-{random.randint(100000, 999999)}",
-                "downloadedAt": datetime.utcnow(),
-                "createdAt": datetime.utcnow()
+                "createdAt": datetime.now(timezone.utc),
+                "updatedAt": datetime.now(timezone.utc)
             }
-            
-            self.docs_collection.insert_one(doc_metadata)
-            logger.info(f"Saved document {doc_number} metadata to MongoDB")
+            self.db.documents.insert_one(document)
+            logger.info(f"Saved document {doc_num} metadata to MongoDB")
             return True
-            
         except Exception as e:
-            logger.error(f"Failed to save document {doc_number} metadata to MongoDB: {e}")
+            logger.error(f"Failed to save document {doc_num} metadata: {e}")
             return False
-    
-    def _upload_document_to_blob(self, job_id, doc_number, company_name, cin):
-        """Upload simulated document to Azure Blob Storage"""
-        if not self.blob_service_client:
-            logger.warning("Azure Blob Storage not configured, skipping upload")
-            return None
-        
-        try:
-            start_time = time.time()
-            
-            # Generate document content
-            document_content = self._generate_document_content(job_id, doc_number, company_name, cin)
-            
-            # Create blob name
-            blob_name = f"jobs/{job_id}/document_{doc_number}.txt"
-            
-            # Upload to blob storage
-            blob_client = self.blob_service_client.get_blob_client(
-                container=self.blob_container, 
-                blob=blob_name
-            )
-            
-            blob_client.upload_blob(document_content, overwrite=True)
-            
-            # Track metrics
-            upload_time = time.time() - start_time
-            self.blob_operations.labels(operation='upload').inc()
-            self.blob_operation_time.labels(operation='upload').observe(upload_time)
-            self.documents_uploaded.inc()
-            
-            # Get blob URL
-            blob_url = blob_client.url
-            
-            logger.info(f"Uploaded document {doc_number} to blob storage: {blob_name}")
-            return blob_url
-            
-        except Exception as e:
-            logger.error(f"Failed to upload document {doc_number} to blob storage: {e}")
-            return None
     
     def process_job(self, job):
         """Process a single job by simulating document download"""
@@ -293,7 +161,9 @@ Document Footer - Generated by FileSure
             # Check if lock has expired (backup check)
             locked_at = current_job.get("lockedAt")
             if locked_at:
-                lock_age = (datetime.utcnow() - locked_at).total_seconds()
+                if locked_at.tzinfo is None:
+                    locked_at = locked_at.replace(tzinfo=timezone.utc)
+                lock_age = (datetime.now(timezone.utc) - locked_at).total_seconds()
                 if lock_age > 600:  # 10 minutes
                     logger.warning(f"Lock expired on job {job_id} (age: {lock_age:.1f}s), skipping")
                     return False
@@ -303,7 +173,6 @@ Document Footer - Generated by FileSure
                 total_documents = random.randint(30, 50)
                 logger.info(f"First run: Setting total documents to {total_documents}")
                 
-                # Update job with total documents
                 self.collection.update_one(
                     {"_id": job_id},
                     {
@@ -313,8 +182,8 @@ Document Footer - Generated by FileSure
                             "processingStages.documentDownload.totalDocuments": total_documents,
                             "processingStages.documentDownload.downloadedDocuments": 0,
                             "processingStages.documentDownload.pendingDocuments": total_documents,
-                            "processingStages.documentDownload.lastUpdated": datetime.utcnow(),
-                            "updatedAt": datetime.utcnow()
+                            "processingStages.documentDownload.lastUpdated": datetime.now(timezone.utc),
+                            "updatedAt": datetime.now(timezone.utc)
                         }
                     }
                 )
@@ -324,32 +193,25 @@ Document Footer - Generated by FileSure
             
             # Calculate how many documents to download in this run (35% of total)
             docs_to_download = max(1, int(total_documents * 0.35))
-            
-            # Ensure we don't download more than remaining
             remaining_docs = total_documents - current_downloaded
             docs_to_download = min(docs_to_download, remaining_docs)
             
             # Track batch size
             self.download_batch_size.observe(docs_to_download)
-            
             logger.info(f"Will download {docs_to_download} documents in this run (35% of {total_documents} total)")
             
             # Simulate downloading documents one by one
             for i in range(docs_to_download):
                 doc_num = current_downloaded + i + 1
-                # Simulate download time (1 second per document)
                 time.sleep(1)
-                
                 downloaded_count = current_downloaded + i + 1
                 pending_count = total_documents - downloaded_count
                 
                 logger.info(f"Downloaded document {doc_num}/{total_documents} for {company_name}")
-                
-                # Track document download
                 self.documents_downloaded.inc()
                 
-                # Upload document to Azure Blob Storage
-                blob_url = self._upload_document_to_blob(job_id, doc_num, company_name, cin)
+                # Upload document to AWS S3
+                blob_url = self._upload_document_to_s3(job_id, doc_num, company_name, cin)
                 
                 # Save document metadata to MongoDB
                 doc_saved = self._save_document_to_mongodb(job_id, doc_num, company_name, cin, blob_url)
@@ -363,8 +225,8 @@ Document Footer - Generated by FileSure
                         "$set": {
                             "processingStages.documentDownload.downloadedDocuments": downloaded_count,
                             "processingStages.documentDownload.pendingDocuments": pending_count,
-                            "processingStages.documentDownload.lastUpdated": datetime.utcnow(),
-                            "updatedAt": datetime.utcnow()
+                            "processingStages.documentDownload.lastUpdated": datetime.now(timezone.utc),
+                            "updatedAt": datetime.now(timezone.utc)
                         }
                     }
                 )
@@ -372,7 +234,6 @@ Document Footer - Generated by FileSure
             # Check if job is completed
             final_downloaded = current_downloaded + docs_to_download
             if final_downloaded >= total_documents:
-                # Mark job as completed and release lock
                 self.collection.update_one(
                     {"_id": job_id},
                     {
@@ -381,8 +242,8 @@ Document Footer - Generated by FileSure
                             "processingStages.documentDownload.status": "completed",
                             "processingStages.documentDownload.downloadedDocuments": total_documents,
                             "processingStages.documentDownload.pendingDocuments": 0,
-                            "processingStages.documentDownload.lastUpdated": datetime.utcnow(),
-                            "updatedAt": datetime.utcnow()
+                            "processingStages.documentDownload.lastUpdated": datetime.now(timezone.utc),
+                            "updatedAt": datetime.now(timezone.utc)
                         },
                         "$unset": {
                             "lockedBy": "",
@@ -393,15 +254,14 @@ Document Footer - Generated by FileSure
                 self.jobs_processed.labels(status='completed').inc()
                 logger.info(f"Job completed! Downloaded all {total_documents} documents for {company_name}")
             else:
-                # Mark job back to pending for next run and release lock
                 self.collection.update_one(
                     {"_id": job_id},
                     {
                         "$set": {
                             "jobStatus": "pending",
                             "processingStages.documentDownload.status": "pending",
-                            "processingStages.documentDownload.lastUpdated": datetime.utcnow(),
-                            "updatedAt": datetime.utcnow()
+                            "processingStages.documentDownload.lastUpdated": datetime.now(timezone.utc),
+                            "updatedAt": datetime.now(timezone.utc)
                         },
                         "$unset": {
                             "lockedBy": "",
@@ -412,30 +272,25 @@ Document Footer - Generated by FileSure
                 self.jobs_processed.labels(status='pending').inc()
                 logger.info(f"Run completed. Downloaded {final_downloaded}/{total_documents} documents for {company_name}. Job set back to pending for next run.")
             
-            # Track processing time
             processing_time = time.time() - start_time
             self.processing_time.observe(processing_time)
-            
             logger.info(f"Successfully completed job {job_id} for {company_name}")
             return True
             
         except Exception as e:
-            # Track processing time even for failed jobs
             processing_time = time.time() - start_time
             self.processing_time.observe(processing_time)
-            
             logger.error(f"Error processing job {job_id}: {e}")
             self.jobs_failed.inc()
             
-            # Mark job as failed and release lock
             self.collection.update_one(
                 {"_id": job_id},
                 {
                     "$set": {
                         "jobStatus": "failed",
                         "processingStages.documentDownload.status": "failed",
-                        "processingStages.documentDownload.lastUpdated": datetime.utcnow(),
-                        "updatedAt": datetime.utcnow()
+                        "processingStages.documentDownload.lastUpdated": datetime.now(timezone.utc),
+                        "updatedAt": datetime.now(timezone.utc)
                     },
                     "$unset": {
                         "lockedBy": "",
@@ -445,49 +300,88 @@ Document Footer - Generated by FileSure
             )
             return False
     
-    def run(self, job_id):
-        """Process a single job by ID and exit"""
+    def acquire_job(self, job_id):
+        """Attempt to acquire a lock on the specified job"""
+        try:
+            result = self.collection.find_one_and_update(
+                {
+                    "_id": ObjectId(job_id),
+                    "jobStatus": "pending",
+                    "processingStages.documentDownload.status": "pending",
+                    "$or": [
+                        {"lockedBy": {"$exists": False}},
+                        {"lockedBy": None},
+                        {
+                            "lockedAt": {
+                                "$lte": datetime.now(timezone.utc) - timedelta(seconds=600)
+                            }
+                        }
+                    ]
+                },
+                {
+                    "$set": {
+                        "jobStatus": "processing",
+                        "processingStages.documentDownload.status": "processing",
+                        "lockedBy": "downloader",
+                        "lockedAt": datetime.now(timezone.utc),
+                        "updatedAt": datetime.now(timezone.utc)
+                    }
+                },
+                return_document=True
+            )
+            
+            if result:
+                logger.info(f"Acquired lock on job {job_id} for {result.get('companyName', 'Unknown')}")
+                return result
+            else:
+                logger.warning(f"Job {job_id} not found or not in pending status")
+                return None
+        except Exception as e:
+            logger.error(f"Error acquiring job {job_id}: {e}")
+            return None
+    
+    def start(self, job_id):
+        """Start the document downloader for a specific job"""
         logger.info(f"Starting Document Downloader for job {job_id}...")
         
-        try:
-            # Get the specific job
-            job = self.get_job_by_id(job_id)
-            
-            if not job:
-                logger.error(f"Could not acquire job {job_id}. Exiting.")
-                sys.exit(1)
-            
-            # Process the job
-            success = self.process_job(job)
-            
-            if success:
-                logger.info(f"Successfully processed job {job_id}. Exiting.")
-                sys.exit(0)
-            else:
-                logger.error(f"Failed to process job {job_id}. Exiting.")
-                sys.exit(1)
-                
-        except KeyboardInterrupt:
-            logger.info("Received interrupt signal. Exiting.")
+        job = self.acquire_job(job_id)
+        if not job:
+            logger.error(f"Could not acquire job {job_id}. Exiting.")
             sys.exit(1)
-        except Exception as e:
-            logger.error(f"Unexpected error processing job {job_id}: {e}")
+        
+        success = self.process_job(job)
+        if not success:
+            logger.error(f"Failed to process job {job_id}. Exiting.")
             sys.exit(1)
+        
+        logger.info(f"Completed processing for job {job_id}")
 
-# Add metrics endpoint for worker
 app = Flask(__name__)
 
-@app.route("/metrics")
+@app.route('/metrics')
 def metrics():
     return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
 
-def start_metrics_server():
-    app.run(host="0.0.0.0", port=9100)
-
 if __name__ == "__main__":
-    # Get job ID from command line argument or environment variable
-    job_id = None
+    # Default job ID if none provided
+    default_job_id = "68aa65572f748b0201925a30"  # Replace with a valid default or generate dynamically if needed
+    if len(sys.argv) == 2:
+        job_id = sys.argv[1]  # User-provided job ID from command line
+    else:
+        job_id = os.environ.get("JOB_ID", default_job_id)  # Fallback to default if no env variable
     
+    downloader = DocumentDownloader()
+    
+    def run_job():
+        while True:
+            downloader.start(job_id)
+            time.sleep(10)  # Wait before retrying or checking for new jobs
+    
+    job_thread = threading.Thread(target=run_job, daemon=True)
+    job_thread.start()
+    
+    logger.info(f"Starting metrics server on http://0.0.0.0:9100 with job ID: {job_id}")
+    app.run(host='0.0.0.0', port=9100)
     if len(sys.argv) == 2:
         job_id = sys.argv[1]
     else:
@@ -496,13 +390,17 @@ if __name__ == "__main__":
     if not job_id:
         print("Usage: python downloader.py <job_id>")
         print("Or set JOB_ID environment variable")
-        print("Example: python downloader.py 68a6b73df6d117b0aeaa695e")
-        print("Example: JOB_ID=68a6b73df6d117b0aeaa695e python downloader.py")
         sys.exit(1)
     
-    # Start metrics server in a separate thread
-    metrics_thread = threading.Thread(target=start_metrics_server, daemon=True)
-    metrics_thread.start()
-    
     downloader = DocumentDownloader()
-    downloader.run(job_id)
+    
+    def run_job():
+        while True:
+            downloader.start(job_id)
+            time.sleep(10)  # Wait before retrying
+    
+    job_thread = threading.Thread(target=run_job, daemon=True)
+    job_thread.start()
+    
+    logger.info("Starting metrics server on http://0.0.0.0:9100")
+    app.run(host='0.0.0.0', port=9100)

@@ -1,0 +1,47 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: worker-scaledjob
+  namespace: filesure
+spec:
+  jobTargetRef:
+    template:
+      spec:
+        containers:
+        - name: worker
+          image: filesure-worker:latest
+          imagePullPolicy: Never
+          command: ["python", "-u", "worker/downloader.py", "$(job_id)"]
+          env:
+          - name: job_id
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['job-id']
+          - name: MONGO_URI
+            value: "mongodb://mongodb:27017"
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: aws-credentials
+                key: access-key
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: aws-credentials
+                key: secret-key
+          - name: S3_BUCKET
+            value: "filesure-documents"
+          restartPolicy: OnFailure
+  triggers:
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus.filesure.svc.cluster.local:9090
+      metricName: mongodb_top_total_count
+      query: sum(mongodb_top_total_count{collection="jobs",database="filesure"}) > 0
+      threshold: "1"
+      activationThreshold: "0"
+  scalingStrategy:
+    strategy: "default"
+  pollingInterval: 30
+  minReplicaCount: 0
+  maxReplicaCount: 10

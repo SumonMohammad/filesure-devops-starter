@@ -1,0 +1,67 @@
+
+services:
+  mongodb:
+    image: mongo
+    container_name: filesure-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - filesure-network
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    image: filesure-api
+    container_name: filesure-api
+    ports:
+      - "5001:5001"
+    env_file:
+      - .env
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017
+    networks:
+      - filesure-network
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    image: filesure-worker
+    container_name: filesure-worker
+    ports:
+      - "9100:9100"
+    env_file:
+      - .env
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017
+    command: python -u worker/downloader.py  # Run script, -u for unbuffered output
+    networks:
+      - filesure-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: filesure-prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - filesure-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: filesure-grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - filesure-network
+
+volumes:
+  mongodb_data:
+
+networks:
+  filesure-network:
+    driver: bridge
