@@ -75,63 +75,46 @@ jobs:
           echo "Contents of kind-config.yaml:"
           cat kubernetes/kind-config.yaml
 
-      - name: Set up Kind
-        uses: helm/kind-action@v1.10.0
-        with:
-          version: v0.23.0
-          cluster_name: filesure-cluster
-          config: kubernetes/kind-config.yaml
-        env:
-          KUBECONFIG: ~/.kube/config
-
-      - name: Debug KUBECONFIG and permissions
-        run: |
-          echo "Checking KUBECONFIG file contents:"
-          cat ~/.kube/config || echo "KUBECONFIG file not found"
-          echo "Checking KUBECONFIG file permissions:"
-          ls -la ~/.kube/config
-          echo "Fixing KUBECONFIG permissions if needed:"
-          chmod 600 ~/.kube/config
-          echo "Listing available kubectl contexts:"
-          kubectl config get-contexts
-          echo "Current kubectl context:"
-          kubectl config current-context
-        env:
-          KUBECONFIG: ~/.kube/config
-
-      - name: Verify Kind cluster
-        run: |
-          echo "Checking Kind clusters..."
-          kind get clusters
-          if ! kind get clusters | grep -q "filesure-cluster"; then
-            echo "Error: Kind cluster 'filesure-cluster' not found!"
-            kind export logs --name filesure-cluster || echo "No logs available"
-            exit 1
-          fi
-          echo "Verifying kubectl context..."
-          if ! kubectl config current-context | grep -q "kind-filesure-cluster"; then
-            echo "Setting kubectl context explicitly..."
-            kubectl config use-context kind-filesure-cluster
-          fi
-          echo "Waiting for Kind cluster to be ready..."
-          kubectl cluster-info
-          kubectl wait --for=condition=ready node --all --timeout=120s
-        env:
-          KUBECONFIG: ~/.kube/config
-
-      - name: Set up kubectl
+      - name: Install kubectl
         uses: azure/setup-kubectl@v4
         with:
           version: 'latest'
-        env:
-          KUBECONFIG: ~/.kube/config
+
+      - name: Set up Kind manually
+        run: |
+          # Install Kind
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          
+          # Create the Kind cluster
+          kind create cluster --name filesure-cluster --config kubernetes/kind-config.yaml
+          
+          # Verify cluster creation
+          kind get clusters
+          
+          # Set kubectl context
+          kubectl config use-context kind-filesure-cluster
+          
+          # Verify kubectl context
+          kubectl config current-context
+          kubectl cluster-info
+
+      - name: Verify Kind cluster readiness
+        run: |
+          echo "Waiting for Kind cluster to be ready..."
+          kubectl wait --for=condition=Ready pod --all --timeout=120s
+          kubectl get nodes
 
       - name: Load Docker images into Kind cluster
         run: |
           kind load docker-image ${{ secrets.DOCKERHUB_USERNAME }}/filesure-api:latest --name filesure-cluster
           kind load docker-image ${{ secrets.DOCKERHUB_USERNAME }}/filesure-worker:latest --name filesure-cluster
-        env:
-          KUBECONFIG: ~/.kube/config
+
+      - name: Create namespaces
+        run: |
+          kubectl create namespace filesure --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace keda --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Create Secrets in filesure namespace
         run: |
@@ -142,8 +125,6 @@ jobs:
             --from-literal=aws-region=${{ secrets.AWS_REGION }} \
             --from-literal=aws-bucket-name=${{ secrets.AWS_BUCKET_NAME }} \
             --dry-run=client -o yaml | kubectl apply -f -
-        env:
-          KUBECONFIG: ~/.kube/config
 
       - name: Create Secrets in keda namespace
         run: |
@@ -154,12 +135,11 @@ jobs:
             --from-literal=aws-region=${{ secrets.AWS_REGION }} \
             --from-literal=aws-bucket-name=${{ secrets.AWS_BUCKET_NAME }} \
             --dry-run=client -o yaml | kubectl apply -f -
-        env:
-          KUBECONFIG: ~/.kube/config
 
       - name: Deploy to Kubernetes
         run: |
-          kubectl apply -f kubernetes/namespace.yml -n filesure
+          echo "Applying Kubernetes manifests..."
+          kubectl apply -f kubernetes/namespace.yml
           kubectl apply -f kubernetes/mongodb.yml -n filesure
           kubectl apply -f kubernetes/api.yml -n filesure
           kubectl apply -f kubernetes/grafana.yml -n filesure
@@ -168,8 +148,14 @@ jobs:
           kubectl apply -f kubernetes/worker-service.yml -n filesure
           kubectl apply -f keda/trigger-auth.yaml -n filesure
           kubectl apply -f keda/worker-scaledjob.yml -n filesure
-          kubectl rollout restart scaledjob/worker-scaledjob -n filesure
-          kubectl rollout restart deployment/api -n filesure
-          kubectl rollout restart deployment/prometheus -n filesure
-        env:
-          KUBECONFIG: ~/.kube/config
+          echo "Deployments applied successfully"
+          echo "Waiting for deployments to be ready..."
+          kubectl rollout status deployment/api -n filesure --timeout=120s
+          kubectl rollout status deployment/prometheus -n filesure --timeout=120s
+
+      - name: Verify deployment
+        run: |
+          echo "Checking deployment status..."
+          kubectl get all -n filesure
+          kubectl get scaledjob -n filesure
+          echo "Deployment verification completed"
