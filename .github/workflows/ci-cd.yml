@@ -81,13 +81,21 @@ jobs:
           version: v0.23.0
           cluster_name: filesure-cluster
           config: kubernetes/kind-config.yaml
+        env:
+          KUBECONFIG: ~/.kube/config
 
-      - name: Debug KUBECONFIG
+      - name: Debug KUBECONFIG and permissions
         run: |
           echo "Checking KUBECONFIG file contents:"
           cat ~/.kube/config || echo "KUBECONFIG file not found"
+          echo "Checking KUBECONFIG file permissions:"
+          ls -la ~/.kube/config
+          echo "Fixing KUBECONFIG permissions if needed:"
+          chmod 600 ~/.kube/config
           echo "Listing available kubectl contexts:"
           kubectl config get-contexts
+          echo "Current kubectl context:"
+          kubectl config current-context
         env:
           KUBECONFIG: ~/.kube/config
 
@@ -100,10 +108,13 @@ jobs:
             kind export logs --name filesure-cluster || echo "No logs available"
             exit 1
           fi
-          echo "Setting kubectl context..."
-          kubectl config use-context kind-filesure-cluster
+          echo "Verifying kubectl context..."
+          if ! kubectl config current-context | grep -q "kind-filesure-cluster"; then
+            echo "Setting kubectl context explicitly..."
+            kubectl config use-context kind-filesure-cluster
+          fi
           echo "Waiting for Kind cluster to be ready..."
-          kubectl cluster-info --context kind-filesure-cluster
+          kubectl cluster-info
           kubectl wait --for=condition=ready node --all --timeout=120s
         env:
           KUBECONFIG: ~/.kube/config
@@ -112,11 +123,15 @@ jobs:
         uses: azure/setup-kubectl@v4
         with:
           version: 'latest'
+        env:
+          KUBECONFIG: ~/.kube/config
 
       - name: Load Docker images into Kind cluster
         run: |
           kind load docker-image ${{ secrets.DOCKERHUB_USERNAME }}/filesure-api:latest --name filesure-cluster
           kind load docker-image ${{ secrets.DOCKERHUB_USERNAME }}/filesure-worker:latest --name filesure-cluster
+        env:
+          KUBECONFIG: ~/.kube/config
 
       - name: Create Secrets in filesure namespace
         run: |
@@ -127,6 +142,8 @@ jobs:
             --from-literal=aws-region=${{ secrets.AWS_REGION }} \
             --from-literal=aws-bucket-name=${{ secrets.AWS_BUCKET_NAME }} \
             --dry-run=client -o yaml | kubectl apply -f -
+        env:
+          KUBECONFIG: ~/.kube/config
 
       - name: Create Secrets in keda namespace
         run: |
@@ -137,6 +154,8 @@ jobs:
             --from-literal=aws-region=${{ secrets.AWS_REGION }} \
             --from-literal=aws-bucket-name=${{ secrets.AWS_BUCKET_NAME }} \
             --dry-run=client -o yaml | kubectl apply -f -
+        env:
+          KUBECONFIG: ~/.kube/config
 
       - name: Deploy to Kubernetes
         run: |
