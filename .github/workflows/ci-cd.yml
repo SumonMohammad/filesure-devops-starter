@@ -66,11 +66,20 @@ jobs:
           docker pull ${{ secrets.DOCKERHUB_USERNAME }}/filesure-api:latest
           docker pull ${{ secrets.DOCKERHUB_USERNAME }}/filesure-worker:latest
 
+      - name: Debug working directory
+        run: |
+          echo "Current working directory:"
+          pwd
+          echo "Listing kubernetes directory contents:"
+          ls -la kubernetes/
+          echo "Contents of kind-config.yaml:"
+          cat kubernetes/kind-config.yaml
+
       - name: Set up Kind
-        uses: engineerd/setup-kind@v0.5.0
+        uses: helm/kind-action@v1.10.0
         with:
-          version: "v0.23.0"
-          cluster-name: filesure-cluster
+          version: v0.23.0
+          cluster_name: filesure-cluster
           config: kubernetes/kind-config.yaml
 
       - name: Verify Kind cluster
@@ -79,6 +88,7 @@ jobs:
           kind get clusters
           if ! kind get clusters | grep -q "filesure-cluster"; then
             echo "Error: Kind cluster 'filesure-cluster' not found!"
+            kind export logs --name filesure-cluster || echo "No logs available"
             exit 1
           fi
           echo "Waiting for Kind cluster to be ready..."
