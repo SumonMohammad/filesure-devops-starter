@@ -8,6 +8,9 @@ on:
     branches:
       - main
 
+env:
+  KIND_NODE_IMAGE: kindest/node:v1.30.0
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -77,26 +80,27 @@ jobs:
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
 
-      # --- Caching Kind node image ---
+      # --- Cache Kind node image for faster cluster startup ---
       - name: Cache Kind node image
         uses: actions/cache@v4
         with:
           path: /tmp/kind-node-image
-          key: kind-node-v1.30.0
+          key: kind-node-${{ env.KIND_NODE_IMAGE }}
 
-      - name: Preload Kind node image
+      - name: Preload Kind node image (from cache if present)
         run: |
           mkdir -p /tmp/kind-node-image
           if [ -f /tmp/kind-node-image/kind-node.tar ]; then
             echo "Loading cached Kind node image..."
             docker load -i /tmp/kind-node-image/kind-node.tar || true
           else
-            echo "No cache found, Kind will pull fresh image."
+            echo "No cached Kind node image found."
           fi
 
       - name: Create Kind cluster
         run: |
-          kind create cluster --name filesure-cluster --config kubernetes/kind-config.yaml
+          echo "Creating kind cluster using image $KIND_NODE_IMAGE"
+          kind create cluster --name filesure-cluster --image "$KIND_NODE_IMAGE" --config kubernetes/kind-config.yaml
           kubectl cluster-info --context kind-filesure-cluster
           kubectl config use-context kind-filesure-cluster
 
@@ -104,7 +108,7 @@ jobs:
         if: always()
         run: |
           echo "Saving Kind node image for caching..."
-          docker save kindest/node:v1.30.0 -o /tmp/kind-node-image/kind-node.tar || true
+          docker save "$KIND_NODE_IMAGE" -o /tmp/kind-node-image/kind-node.tar || true
 
       - name: Wait for cluster readiness
         run: |
@@ -113,16 +117,17 @@ jobs:
           
           echo "Waiting for kube-system pods to be ready..."
           for i in {1..30}; do
-            READY=$(kubectl get pods -n kube-system --no-headers 2>/dev/null | grep -c "Running" || true)
+            READY=$(kubectl get pods -n kube-system --no-headers 2>/dev/null | awk '{print $3}' | grep -c "^Running$" || true)
             TOTAL=$(kubectl get pods -n kube-system --no-headers 2>/dev/null | wc -l || true)
-            echo "Pods ready: $READY / $TOTAL"
-            if [ "$READY" -ge 2 ]; then
+            echo "kube-system pods Running: $READY / $TOTAL"
+            if [ "$TOTAL" -gt 0 ] && [ "$READY" -ge 2 ]; then
               echo "System pods are running."
               break
             fi
             sleep 10
           done
-          kubectl get pods -n kube-system
+          kubectl get pods -n kube-system || true
+          kubectl get nodes
 
       - name: Load Docker images into Kind cluster
         run: |
@@ -133,6 +138,33 @@ jobs:
         run: |
           kubectl create namespace filesure --dry-run=client -o yaml | kubectl apply -f -
           kubectl create namespace keda --dry-run=client -o yaml | kubectl apply -f -
+
+      # --- Install KEDA (CRDs + Operator) BEFORE applying KEDA resources ---
+      - name: Install KEDA and wait for CRDs
+        run: |
+          echo "Installing KEDA..."
+          kubectl apply -f https://github.com/kedacore/keda/releases/download/v2.14.0/keda-2.14.0.yaml
+
+          echo "Waiting for KEDA CRDs to be established..."
+          for crd in \
+            scaledobjects.keda.sh \
+            scaledjobs.keda.sh \
+            triggerauthentications.keda.sh \
+            composite-scaledobjects.keda.sh
+          do
+            echo "Waiting for CRD/$crd"
+            for i in {1..30}; do
+              if kubectl get crd "$crd" >/dev/null 2>&1; then
+                kubectl wait --for=condition=Established crd/$crd --timeout=120s || true
+                break
+              fi
+              sleep 5
+            done
+          done
+
+          echo "Waiting for KEDA operator deployment..."
+          kubectl rollout status deployment/keda-operator -n keda --timeout=300s || true
+          kubectl get pods -n keda
 
       - name: Create Secrets in filesure namespace
         run: |
@@ -164,15 +196,19 @@ jobs:
           kubectl apply -f kubernetes/prometheus.yml -n filesure
           kubectl apply -f kubernetes/mongodb-exporter.yml -n filesure
           kubectl apply -f kubernetes/worker-service.yml -n filesure
+
+          # KEDA resources AFTER KEDA is installed and CRDs are ready
           kubectl apply -f keda/trigger-auth.yml -n filesure
           kubectl apply -f keda/worker-scaledjob.yml -n filesure
 
-          echo "Waiting for deployments..."
-          kubectl rollout status deployment/api -n filesure --timeout=180s || true
-          kubectl rollout status deployment/prometheus -n filesure --timeout=180s || true
+          echo "Waiting for key deployments..."
+          kubectl rollout status deployment/api -n filesure --timeout=300s || true
+          kubectl rollout status deployment/prometheus -n filesure --timeout=300s || true
 
       - name: Verify deployment
         run: |
           echo "Checking deployment status..."
           kubectl get all -n filesure
-          kubectl get scaledjob -n filesure
+          kubectl get scaledjob -n filesure || true
+          kubectl get scaledobject -n filesure || true
+          kubectl get pods -n keda || true
