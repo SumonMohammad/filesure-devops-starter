@@ -7,16 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pymongo import MongoClient
 from bson import ObjectId
 import logging
-from prometheus_client import (
-    Counter,
-    Summary,
-    Gauge,
-    Histogram,
-    generate_latest,
-    CONTENT_TYPE_LATEST,
-    CollectorRegistry,
-    push_to_gateway,
-)
+from prometheus_client import Counter, Summary, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST, CollectorRegistry, push_to_gateway
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 from flask import Flask
@@ -28,10 +19,9 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
 
 class DocumentDownloader:
     def __init__(self):
@@ -54,9 +44,7 @@ class DocumentDownloader:
             self.docs_collection = self.db[self.docs_collection_name]
             self.collection.create_index("lockedAt")
             self.collection.create_index("jobStatus")  # Added index for KEDA trigger
-            logger.info(
-                "MongoDB client initialized and collections/indexes set up"
-            )
+            logger.info("MongoDB client initialized and collections/indexes set up")
         except Exception as e:
             logger.error(f"Failed to initialize MongoDB: {e}")
             sys.exit(1)
@@ -70,28 +58,19 @@ class DocumentDownloader:
             session = boto3.Session(
                 aws_access_key_id=self.aws_access_key_id,
                 aws_secret_access_key=self.aws_secret_access_key,
-                region_name=self.aws_region,
+                region_name=self.aws_region
             )
-            self.s3_client = session.client("s3")
+            self.s3_client = session.client('s3')
             self.s3_client.head_bucket(Bucket=self.aws_bucket)
-            logger.info(
-                f"AWS S3 client initialized for bucket: {self.aws_bucket}"
-            )
+            logger.info(f"AWS S3 client initialized for bucket: {self.aws_bucket}")
         except NoCredentialsError:
-            logger.warning(
-                "No AWS credentials provided, attempting to use IAM role"
-            )
+            logger.warning("No AWS credentials provided, attempting to use IAM role")
             try:
-                self.s3_client = boto3.client("s3", region_name=self.aws_region)
+                self.s3_client = boto3.client('s3', region_name=self.aws_region)
                 self.s3_client.head_bucket(Bucket=self.aws_bucket)
-                logger.info(
-                    f"AWS S3 client initialized using IAM role for bucket: "
-                    f"{self.aws_bucket}"
-                )
+                logger.info(f"AWS S3 client initialized using IAM role for bucket: {self.aws_bucket}")
             except Exception as e:
-                logger.error(
-                    f"Failed to initialize AWS S3 client with IAM role: {e}"
-                )
+                logger.error(f"Failed to initialize AWS S3 client with IAM role: {e}")
                 sys.exit(1)
         except ClientError as e:
             logger.error(f"Failed to access S3 bucket {self.aws_bucket}: {e}")
@@ -102,87 +81,23 @@ class DocumentDownloader:
 
         # Prometheus metrics
         self.registry = CollectorRegistry()
-        self.jobs_processed = Counter(
-            "jobs_processed_total",
-            "Total number of jobs processed",
-            ["status"],
-            registry=self.registry,
-        )
-        self.jobs_found = Counter(
-            "jobs_found_total",
-            "Total number of jobs found in each cycle",
-            registry=self.registry,
-        )
-        self.jobs_locked = Counter(
-            "jobs_locked_total",
-            "Total number of jobs successfully locked",
-            registry=self.registry,
-        )
-        self.jobs_failed = Counter(
-            "jobs_failed_total",
-            "Total number of jobs that failed processing",
-            registry=self.registry,
-        )
-        self.jobs_skipped = Counter(
-            "jobs_skipped_total",
-            "Total number of jobs skipped due to lock issues",
-            registry=self.registry,
-        )
-        self.documents_downloaded = Counter(
-            "documents_downloaded_total",
-            "Total number of documents downloaded",
-            registry=self.registry,
-        )
-        self.documents_uploaded = Counter(
-            "documents_uploaded_total",
-            "Total number of documents uploaded to S3",
-            registry=self.registry,
-        )
-        self.s3_operations = Counter(
-            "s3_operations_total",
-            "Total S3 operations",
-            ["operation"],
-            registry=self.registry,
-        )
-        self.s3_operation_time = Summary(
-            "s3_operation_duration_seconds",
-            "Time spent on S3 operations",
-            ["operation"],
-            registry=self.registry,
-        )
-        self.processing_time = Summary(
-            "job_processing_duration_seconds",
-            "Time spent processing jobs",
-            registry=self.registry,
-        )
-        self.lock_cleanup = Counter(
-            "lock_cleanup_total",
-            "Total number of expired locks cleaned up",
-            registry=self.registry,
-        )
-        self.active_jobs = Gauge(
-            "active_jobs",
-            "Number of jobs currently being processed",
-            registry=self.registry,
-        )
-        self.pending_jobs = Gauge(
-            "pending_jobs",
-            "Number of jobs waiting to be processed",
-            registry=self.registry,
-        )
-        self.completed_jobs = Gauge(
-            "completed_jobs",
-            "Number of jobs completed",
-            registry=self.registry,
-        )
-        self.download_batch_size = Histogram(
-            "download_batch_size",
-            "Number of documents downloaded per batch",
-            registry=self.registry,
-        )
+        self.jobs_processed = Counter('jobs_processed_total', 'Total number of jobs processed', ['status'], registry=self.registry)
+        self.jobs_found = Counter('jobs_found_total', 'Total number of jobs found in each cycle', registry=self.registry)
+        self.jobs_locked = Counter('jobs_locked_total', 'Total number of jobs successfully locked', registry=self.registry)
+        self.jobs_failed = Counter('jobs_failed_total', 'Total number of jobs that failed processing', registry=self.registry)
+        self.jobs_skipped = Counter('jobs_skipped_total', 'Total number of jobs skipped due to lock issues', registry=self.registry)
+        self.documents_downloaded = Counter('documents_downloaded_total', 'Total number of documents downloaded', registry=self.registry)
+        self.documents_uploaded = Counter('documents_uploaded_total', 'Total number of documents uploaded to S3', registry=self.registry)
+        self.s3_operations = Counter('s3_operations_total', 'Total S3 operations', ['operation'], registry=self.registry)
+        self.s3_operation_time = Summary('s3_operation_duration_seconds', 'Time spent on S3 operations', ['operation'], registry=self.registry)
+        self.processing_time = Summary('job_processing_duration_seconds', 'Time spent processing jobs', registry=self.registry)
+        self.lock_cleanup = Counter('lock_cleanup_total', 'Total number of expired locks cleaned up', registry=self.registry)
+        self.active_jobs = Gauge('active_jobs', 'Number of jobs currently being processed', registry=self.registry)
+        self.pending_jobs = Gauge('pending_jobs', 'Number of jobs waiting to be processed', registry=self.registry)
+        self.completed_jobs = Gauge('completed_jobs', 'Number of jobs completed', registry=self.registry)
+        self.download_batch_size = Histogram('download_batch_size', 'Number of documents downloaded per batch', registry=self.registry)
 
         logger.info("Document Downloader initialized")
-
 
     def get_pending_job(self):
         """Find and lock a pending job atomically"""
@@ -193,8 +108,8 @@ class DocumentDownloader:
                     "jobStatus": "pending",
                     "$or": [
                         {"lockedAt": {"$exists": False}},
-                        {"lockedAt": {"$lt": now - timedelta(minutes=10)}},
-                    ],
+                        {"lockedAt": {"$lt": now - timedelta(minutes=10)}}
+                    ]
                 },
                 {
                     "$set": {
@@ -203,33 +118,24 @@ class DocumentDownloader:
                         "processingStages.documentDownload.lastUpdated": now,
                         "updatedAt": now,
                         "lockedBy": f"downloader-{os.getpid()}-{int(time.time())}",
-                        "lockedAt": now,
-                    },
+                        "lockedAt": now
+                    }
                 },
-                return_document=True,
+                return_document=True
             )
             if job:
                 self.jobs_locked.inc()
                 self.active_jobs.inc()
-                logger.info(
-                    f"Acquired lock on pending job {job['_id']} for "
-                    f"{job.get('companyName', 'Unknown')}"
-                )
+                logger.info(f"Acquired lock on pending job {job['_id']} for {job.get('companyName', 'Unknown')}")
                 return job
             else:
-                pending_count = self.collection.count_documents(
-                    {"jobStatus": "pending"}
-                )
+                pending_count = self.collection.count_documents({"jobStatus": "pending"})
                 self.jobs_found.inc(pending_count)
-                logger.info(
-                    f"No pending jobs available to lock. Current pending "
-                    f"job count: {pending_count}"
-                )
+                logger.info(f"No pending jobs available to lock. Current pending job count: {pending_count}")
                 return None
         except Exception as e:
             logger.error(f"Error acquiring pending job: {e}")
             return None
-
 
     def get_job_by_id(self, job_id):
         """Get a specific job by ID and try to acquire lock"""
@@ -241,23 +147,18 @@ class DocumentDownloader:
                     "$set": {
                         "jobStatus": "processing",
                         "processingStages.documentDownload.status": "processing",
-                        "processingStages.documentDownload.lastUpdated": datetime.now(
-                            timezone.utc
-                        ),
+                        "processingStages.documentDownload.lastUpdated": datetime.now(timezone.utc),
                         "updatedAt": datetime.now(timezone.utc),
                         "lockedBy": f"downloader-{os.getpid()}-{int(time.time())}",
-                        "lockedAt": datetime.now(timezone.utc),
-                    },
+                        "lockedAt": datetime.now(timezone.utc)
+                    }
                 },
-                return_document=True,
+                return_document=True
             )
             if job:
                 self.jobs_locked.inc()
                 self.active_jobs.inc()
-                logger.info(
-                    f"Acquired lock on job {job['_id']} for "
-                    f"{job.get('companyName', 'Unknown')}"
-                )
+                logger.info(f"Acquired lock on job {job['_id']} for {job.get('companyName', 'Unknown')}")
                 return job
             else:
                 logger.warning(f"Job {job_id} not found or not in pending status")
@@ -266,7 +167,6 @@ class DocumentDownloader:
             logger.error(f"Error getting job {job_id}: {e}")
             return None
 
-
     def _cleanup_expired_locks(self):
         """Clean up locks that are older than 10 minutes"""
         try:
@@ -274,22 +174,20 @@ class DocumentDownloader:
             result = self.collection.update_many(
                 {
                     "jobStatus": "processing",
-                    "lockedAt": {"$lt": cutoff_time},
+                    "lockedAt": {"$lt": cutoff_time}
                 },
                 {
                     "$set": {
                         "jobStatus": "pending",
                         "processingStages.documentDownload.status": "pending",
-                        "processingStages.documentDownload.lastUpdated": datetime.now(
-                            timezone.utc
-                        ),
-                        "updatedAt": datetime.now(timezone.utc),
+                        "processingStages.documentDownload.lastUpdated": datetime.now(timezone.utc),
+                        "updatedAt": datetime.now(timezone.utc)
                     },
                     "$unset": {
                         "lockedBy": "",
-                        "lockedAt": "",
-                    },
-                },
+                        "lockedAt": ""
+                    }
+                }
             )
             if result.modified_count > 0:
                 self.lock_cleanup.inc(result.modified_count)
@@ -297,13 +195,9 @@ class DocumentDownloader:
                     {"jobStatus": "pending", "lockedAt": {"$exists": False}}
                 )
                 job_ids = [str(job["_id"]) for job in expired_jobs]
-                logger.info(
-                    f"Cleaned up {result.modified_count} expired locks for jobs: "
-                    f"{job_ids}"
-                )
+                logger.info(f"Cleaned up {result.modified_count} expired locks for jobs: {job_ids}")
         except Exception as e:
             logger.error(f"Error cleaning up expired locks: {e}")
-
 
     def _update_job_counts(self):
         """Update job count metrics"""
@@ -317,16 +211,9 @@ class DocumentDownloader:
         except Exception as e:
             logger.error(f"Error updating job counts: {e}")
 
-
     def _generate_document_content(self, job_id, doc_number, company_name, cin):
         """Generate simulated document content as text file"""
-        document_types = [
-            "Annual Report",
-            "Financial Statement",
-            "Compliance Document",
-            "Board Resolution",
-            "Tax Filing",
-        ]
+        document_types = ["Annual Report", "Financial Statement", "Compliance Document", "Board Resolution", "Tax Filing"]
         doc_type = random.choice(document_types)
         content = f"""
 COMPANY DOCUMENT - {doc_type}
@@ -360,18 +247,11 @@ Document Footer - Generated by FileSure
         """.strip()
         return content
 
-
     def _save_document_to_mongodb(self, job_id, doc_number, company_name, cin, blob_url=None):
         """Save document metadata to MongoDB documents collection"""
         for attempt in range(3):  # Retry up to 3 times
             try:
-                document_types = [
-                    "Annual Report",
-                    "Financial Statement",
-                    "Compliance Document",
-                    "Board Resolution",
-                    "Tax Filing",
-                ]
+                document_types = ["Annual Report", "Financial Statement", "Compliance Document", "Board Resolution", "Tax Filing"]
                 doc_type = random.choice(document_types)
                 doc_metadata = {
                     "jobId": job_id,
@@ -384,25 +264,18 @@ Document Footer - Generated by FileSure
                     "fileSize": random.randint(1024, 10240),
                     "checksum": f"MD5-{random.randint(100000, 999999)}",
                     "downloadedAt": datetime.now(timezone.utc),
-                    "createdAt": datetime.now(timezone.utc),
+                    "createdAt": datetime.now(timezone.utc)
                 }
                 self.docs_collection.insert_one(doc_metadata)
                 logger.info(f"Saved document {doc_number} metadata to MongoDB")
                 return True
             except Exception as e:
-                logger.warning(
-                    f"Attempt {attempt + 1} failed to save document {doc_number} "
-                    f"metadata to MongoDB: {e}"
-                )
+                logger.warning(f"Attempt {attempt + 1} failed to save document {doc_number} metadata to MongoDB: {e}")
                 if attempt == 2:
-                    logger.error(
-                        f"Failed to save document {doc_number} metadata after 3 "
-                        f"attempts: {e}"
-                    )
+                    logger.error(f"Failed to save document {doc_number} metadata after 3 attempts: {e}")
                     return False
                 time.sleep(1)  # Wait before retry
         return False
-
 
     def _upload_document_to_s3(self, job_id, doc_number, company_name, cin):
         """Upload simulated document to AWS S3"""
@@ -412,52 +285,37 @@ Document Footer - Generated by FileSure
         for attempt in range(3):  # Retry up to 3 times
             try:
                 start_time = time.time()
-                document_content = self._generate_document_content(
-                    job_id, doc_number, company_name, cin
-                )
+                document_content = self._generate_document_content(job_id, doc_number, company_name, cin)
                 key = f"jobs/{job_id}/document_{doc_number}.txt"
                 self.s3_client.put_object(
                     Bucket=self.aws_bucket,
                     Key=key,
-                    Body=document_content.encode("utf-8"),
+                    Body=document_content.encode('utf-8')
                 )
-                blob_url = (
-                    f"https://{self.aws_bucket}.s3.{self.aws_region}.amazonaws.com/{key}"
-                )
+                blob_url = f"https://{self.aws_bucket}.s3.{self.aws_region}.amazonaws.com/{key}"
                 upload_time = time.time() - start_time
-                self.s3_operations.labels(operation="upload").inc()
-                self.s3_operation_time.labels(operation="upload").observe(upload_time)
+                self.s3_operations.labels(operation='upload').inc()
+                self.s3_operation_time.labels(operation='upload').observe(upload_time)
                 self.documents_uploaded.inc()
                 logger.info(f"Uploaded document {doc_number} to S3: {key}")
                 return blob_url
             except ClientError as e:
-                logger.warning(
-                    f"Attempt {attempt + 1} failed to upload document {doc_number} "
-                    f"to S3: {e}"
-                )
+                logger.warning(f"Attempt {attempt + 1} failed to upload document {doc_number} to S3: {e}")
                 if attempt == 2:
-                    logger.error(
-                        f"Failed to upload document {doc_number} to S3 after 3 "
-                        f"attempts: {e}"
-                    )
+                    logger.error(f"Failed to upload document {doc_number} to S3 after 3 attempts: {e}")
                     return None
                 time.sleep(1)  # Wait before retry
             except Exception as e:
-                logger.error(
-                    f"Unexpected error uploading document {doc_number} to S3: {e}"
-                )
+                logger.error(f"Unexpected error uploading document {doc_number} to S3: {e}")
                 return None
         return None
-
 
     def process_job(self, job):
         """Process a single job by simulating document download"""
         job_id = job["_id"]
         cin = job.get("cin", "Unknown")
         company_name = job.get("companyName", "Unknown")
-        logger.info(
-            f"Processing job {job_id} for {company_name} (CIN: {cin})"
-        )
+        logger.info(f"Processing job {job_id} for {company_name} (CIN: {cin})")
         start_time = time.time()
         try:
             # Verify job lock
@@ -469,14 +327,9 @@ Document Footer - Generated by FileSure
                 return False
             locked_at = current_job.get("lockedAt")
             if locked_at:
-                lock_age = (
-                    datetime.now(timezone.utc) - locked_at.replace(tzinfo=timezone.utc)
-                ).total_seconds()
+                lock_age = (datetime.now(timezone.utc) - locked_at.replace(tzinfo=timezone.utc)).total_seconds()
                 if lock_age > 600:
-                    logger.warning(
-                        f"Lock expired on job {job_id} (age: {lock_age:.1f}s), "
-                        "resetting to pending"
-                    )
+                    logger.warning(f"Lock expired on job {job_id} (age: {lock_age:.1f}s), resetting to pending")
                     self.jobs_skipped.inc()
                     self.collection.update_one(
                         {"_id": job_id},
@@ -484,31 +337,21 @@ Document Footer - Generated by FileSure
                             "$set": {
                                 "jobStatus": "pending",
                                 "processingStages.documentDownload.status": "pending",
-                                "processingStages.documentDownload.lastUpdated": (
-                                    datetime.now(timezone.utc)
-                                ),
-                                "updatedAt": datetime.now(timezone.utc),
+                                "processingStages.documentDownload.lastUpdated": datetime.now(timezone.utc),
+                                "updatedAt": datetime.now(timezone.utc)
                             },
                             "$unset": {
                                 "lockedBy": "",
-                                "lockedAt": "",
-                            },
-                        },
+                                "lockedAt": ""
+                            }
+                        }
                     )
                     self.active_jobs.dec()
                     return False
 
             # Initialize or retrieve document counts
-            current_total = (
-                current_job.get("processingStages", {})
-                .get("documentDownload", {})
-                .get("totalDocuments", 0)
-            )
-            current_downloaded = (
-                current_job.get("processingStages", {})
-                .get("documentDownload", {})
-                .get("downloadedDocuments", 0)
-            )
+            current_total = current_job.get("processingStages", {}).get("documentDownload", {}).get("totalDocuments", 0)
+            current_downloaded = current_job.get("processingStages", {}).get("documentDownload", {}).get("downloadedDocuments", 0)
             if current_total == 0:
                 total_documents = random.randint(30, 50)
                 logger.info(f"First run: Setting total documents to {total_documents}")
@@ -518,75 +361,48 @@ Document Footer - Generated by FileSure
                         "$set": {
                             "jobStatus": "in_progress",
                             "processingStages.documentDownload.status": "in_progress",
-                            "processingStages.documentDownload.totalDocuments": (
-                                total_documents
-                            ),
+                            "processingStages.documentDownload.totalDocuments": total_documents,
                             "processingStages.documentDownload.downloadedDocuments": 0,
-                            "processingStages.documentDownload.pendingDocuments": (
-                                total_documents
-                            ),
-                            "processingStages.documentDownload.lastUpdated": (
-                                datetime.now(timezone.utc)
-                            ),
-                            "updatedAt": datetime.now(timezone.utc),
-                        },
-                    },
+                            "processingStages.documentDownload.pendingDocuments": total_documents,
+                            "processingStages.documentDownload.lastUpdated": datetime.now(timezone.utc),
+                            "updatedAt": datetime.now(timezone.utc)
+                        }
+                    }
                 )
             else:
                 total_documents = current_total
-                logger.info(
-                    f"Subsequent run: Total documents is {total_documents}, already "
-                    f"downloaded {current_downloaded}"
-                )
+                logger.info(f"Subsequent run: Total documents is {total_documents}, already downloaded {current_downloaded}")
 
             # Process batch of documents
             docs_to_download = max(1, int(total_documents * 0.35))
             remaining_docs = total_documents - current_downloaded
             docs_to_download = min(docs_to_download, remaining_docs)
             self.download_batch_size.observe(docs_to_download)
-            logger.info(
-                f"Will download {docs_to_download} documents in this run "
-                f"(35% of {total_documents} total)"
-            )
+            logger.info(f"Will download {docs_to_download} documents in this run (35% of {total_documents} total)")
 
             for i in range(docs_to_download):
                 doc_num = current_downloaded + i + 1
                 time.sleep(1)  # Simulate download
                 downloaded_count = current_downloaded + i + 1
                 pending_count = total_documents - downloaded_count
-                logger.info(
-                    f"Downloaded document {doc_num}/{total_documents} for "
-                    f"{company_name}"
-                )
+                logger.info(f"Downloaded document {doc_num}/{total_documents} for {company_name}")
                 self.documents_downloaded.inc()
-                blob_url = self._upload_document_to_s3(
-                    job_id, doc_num, company_name, cin
-                )
-                doc_saved = self._save_document_to_mongodb(
-                    job_id, doc_num, company_name, cin, blob_url
-                )
+                blob_url = self._upload_document_to_s3(job_id, doc_num, company_name, cin)
+                doc_saved = self._save_document_to_mongodb(job_id, doc_num, company_name, cin, blob_url)
                 if not doc_saved:
-                    logger.warning(
-                        f"Failed to save document {doc_num} metadata to MongoDB"
-                    )
+                    logger.warning(f"Failed to save document {doc_num} metadata to MongoDB")
 
                 # Update document counts incrementally
                 self.collection.update_one(
                     {"_id": job_id},
                     {
                         "$set": {
-                            "processingStages.documentDownload.downloadedDocuments": (
-                                downloaded_count
-                            ),
-                            "processingStages.documentDownload.pendingDocuments": (
-                                pending_count
-                            ),
-                            "processingStages.documentDownload.lastUpdated": (
-                                datetime.now(timezone.utc)
-                            ),
-                            "updatedAt": datetime.now(timezone.utc),
-                        },
-                    },
+                            "processingStages.documentDownload.downloadedDocuments": downloaded_count,
+                            "processingStages.documentDownload.pendingDocuments": pending_count,
+                            "processingStages.documentDownload.lastUpdated": datetime.now(timezone.utc),
+                            "updatedAt": datetime.now(timezone.utc)
+                        }
+                    }
                 )
 
             # Final status update
@@ -598,26 +414,19 @@ Document Footer - Generated by FileSure
                         "$set": {
                             "jobStatus": "completed",
                             "processingStages.documentDownload.status": "completed",
-                            "processingStages.documentDownload.downloadedDocuments": (
-                                total_documents
-                            ),
+                            "processingStages.documentDownload.downloadedDocuments": total_documents,
                             "processingStages.documentDownload.pendingDocuments": 0,
-                            "processingStages.documentDownload.lastUpdated": (
-                                datetime.now(timezone.utc)
-                            ),
-                            "updatedAt": datetime.now(timezone.utc),
+                            "processingStages.documentDownload.lastUpdated": datetime.now(timezone.utc),
+                            "updatedAt": datetime.now(timezone.utc)
                         },
                         "$unset": {
                             "lockedBy": "",
-                            "lockedAt": "",
-                        },
-                    },
+                            "lockedAt": ""
+                        }
+                    }
                 )
-                self.jobs_processed.labels(status="completed").inc()
-                logger.info(
-                    f"Job completed! Downloaded all {total_documents} documents for "
-                    f"{company_name}"
-                )
+                self.jobs_processed.labels(status='completed').inc()
+                logger.info(f"Job completed! Downloaded all {total_documents} documents for {company_name}")
             else:
                 self.collection.update_one(
                     {"_id": job_id},
@@ -625,36 +434,24 @@ Document Footer - Generated by FileSure
                         "$set": {
                             "jobStatus": "pending",
                             "processingStages.documentDownload.status": "pending",
-                            "processingStages.documentDownload.downloadedDocuments": (
-                                final_downloaded
-                            ),
-                            "processingStages.documentDownload.pendingDocuments": (
-                                total_documents - final_downloaded
-                            ),
-                            "processingStages.documentDownload.lastUpdated": (
-                                datetime.now(timezone.utc)
-                            ),
-                            "updatedAt": datetime.now(timezone.utc),
+                            "processingStages.documentDownload.downloadedDocuments": final_downloaded,
+                            "processingStages.documentDownload.pendingDocuments": total_documents - final_downloaded,
+                            "processingStages.documentDownload.lastUpdated": datetime.now(timezone.utc),
+                            "updatedAt": datetime.now(timezone.utc)
                         },
                         "$unset": {
                             "lockedBy": "",
-                            "lockedAt": "",
-                        },
-                    },
+                            "lockedAt": ""
+                        }
+                    }
                 )
-                self.jobs_processed.labels(status="pending").inc()
-                logger.info(
-                    f"Run completed. Downloaded {final_downloaded}/"
-                    f"{total_documents} documents for {company_name}. "
-                    "Job set back to pending for next run."
-                )
+                self.jobs_processed.labels(status='pending').inc()
+                logger.info(f"Run completed. Downloaded {final_downloaded}/{total_documents} documents for {company_name}. Job set back to pending for next run.")
 
             processing_time = time.time() - start_time
             self.processing_time.observe(processing_time)
             self.active_jobs.dec()
-            logger.info(
-                f"Successfully completed job {job_id} for {company_name}"
-            )
+            logger.info(f"Successfully completed job {job_id} for {company_name}")
             return True
         except Exception as e:
             processing_time = time.time() - start_time
@@ -667,17 +464,15 @@ Document Footer - Generated by FileSure
                     "$set": {
                         "jobStatus": "failed",
                         "processingStages.documentDownload.status": "failed",
-                        "processingStages.documentDownload.lastUpdated": (
-                            datetime.now(timezone.utc)
-                        ),
+                        "processingStages.documentDownload.lastUpdated": datetime.now(timezone.utc),
                         "updatedAt": datetime.now(timezone.utc),
-                        "errorMessage": str(e),  # Add error message for debugging
+                        "errorMessage": str(e)  # Add error message for debugging
                     },
                     "$unset": {
                         "lockedBy": "",
-                        "lockedAt": "",
-                    },
-                },
+                        "lockedAt": ""
+                    }
+                }
             )
             self.active_jobs.dec()
             return False
@@ -685,27 +480,14 @@ Document Footer - Generated by FileSure
             self._update_job_counts()
             for attempt in range(3):  # Retry up to 3 times
                 try:
-                    push_to_gateway(
-                        "pushgateway.filesure.svc.cluster.local:9091",
-                        job=f"worker_{job_id}",
-                        registry=self.registry,
-                    )
-                    logger.info(
-                        f"Pushed metrics for job {job_id} to Pushgateway"
-                    )
+                    push_to_gateway('pushgateway.filesure.svc.cluster.local:9091', job=f'worker_{job_id}', registry=self.registry)
+                    logger.info(f"Pushed metrics for job {job_id} to Pushgateway")
                     break
                 except Exception as e:
-                    logger.warning(
-                        f"Attempt {attempt + 1} failed to push metrics for job "
-                        f"{job_id}: {e}"
-                    )
+                    logger.warning(f"Attempt {attempt + 1} failed to push metrics for job {job_id}: {e}")
                     if attempt == 2:
-                        logger.error(
-                            f"Failed to push metrics for job {job_id} after 3 "
-                            f"attempts: {e}"
-                        )
+                        logger.error(f"Failed to push metrics for job {job_id} after 3 attempts: {e}")
                     time.sleep(1)  # Wait before retry
-
 
     def run(self):
         """Process a pending job and exit"""
@@ -715,12 +497,8 @@ Document Footer - Generated by FileSure
             self._update_job_counts()
             job = self.get_pending_job()
             if not job:
-                pending_count = self.collection.count_documents(
-                    {"jobStatus": "pending"}
-                )
-                logger.info(
-                    f"No pending job found. Current pending job count: {pending_count}"
-                )
+                pending_count = self.collection.count_documents({"jobStatus": "pending"})
+                logger.info(f"No pending job found. Current pending job count: {pending_count}")
                 sys.exit(0)
             success = self.process_job(job)
             if success:
@@ -737,19 +515,15 @@ Document Footer - Generated by FileSure
             logger.error(f"Unexpected error in run loop: {e}")
             sys.exit(1)
 
-
 # Flask app for Prometheus metrics
 app = Flask(__name__)
 
-
 @app.route("/metrics")
 def metrics():
-    return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
-
+    return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
 
 def start_metrics_server():
     app.run(host="0.0.0.0", port=9100)
-
 
 if __name__ == "__main__":
     metrics_thread = threading.Thread(target=start_metrics_server, daemon=True)
