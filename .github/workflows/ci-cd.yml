@@ -2,32 +2,41 @@ name: CI/CD Pipeline for FileSure
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 env:
   KIND_NODE_IMAGE: kindest/node:v1.30.0
 
 jobs:
-  build-and-push:
+  build-api:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - name: Check for API changes
+        id: api_changes
+        run: |
+          if git diff --quiet HEAD^ HEAD -- api/; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        if: steps.api_changes.outputs.changed == 'true'
 
       - name: Log in to DockerHub
         uses: docker/login-action@v3
+        if: steps.api_changes.outputs.changed == 'true'
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push API image
+        if: steps.api_changes.outputs.changed == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -37,7 +46,33 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  build-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for Worker changes
+        id: worker_changes
+        run: |
+          if git diff --quiet HEAD^ HEAD -- worker/; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        if: steps.worker_changes.outputs.changed == 'true'
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v3
+        if: steps.worker_changes.outputs.changed == 'true'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Build and push Worker image
+        if: steps.worker_changes.outputs.changed == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -48,27 +83,20 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy-local:
-    needs: build-and-push
+    needs: [build-api, build-worker]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
+      # --- Docker login for pulling images ---
       - name: Log in to DockerHub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Pull Docker images from DockerHub
-        run: |
-          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/filesure-api:latest || true
-          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/filesure-worker:latest || true
-
+      # --- Install tools ---
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
         with:
@@ -80,26 +108,22 @@ jobs:
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
 
-      # --- Caching Kind node image ---
+      # --- Cache Kind node image ---
       - name: Cache Kind node image
         uses: actions/cache@v4
         with:
           path: /tmp/kind-node-image
           key: kind-node-${{ env.KIND_NODE_IMAGE }}
 
-      - name: Preload Kind node image (from cache if present)
+      - name: Preload Kind node image (if cached)
         run: |
           mkdir -p /tmp/kind-node-image
           if [ -f /tmp/kind-node-image/kind-node.tar ]; then
-            echo "Loading cached Kind node image..."
             docker load -i /tmp/kind-node-image/kind-node.tar || true
-          else
-            echo "No cache found, Kind will pull fresh image."
           fi
 
       - name: Create Kind cluster
         run: |
-          echo "Creating kind cluster using image $KIND_NODE_IMAGE"
           kind create cluster --name filesure-cluster --image "$KIND_NODE_IMAGE" --config kubernetes/kind-config.yaml
           kubectl cluster-info --context kind-filesure-cluster
           kubectl config use-context kind-filesure-cluster
@@ -107,97 +131,61 @@ jobs:
       - name: Save Kind node image to cache
         if: always()
         run: |
-          echo "Saving Kind node image for caching..."
           docker save "${KIND_NODE_IMAGE}" -o /tmp/kind-node-image/kind-node.tar || true
 
       - name: Wait for cluster readiness
         run: |
-          echo "Waiting for nodes to be ready..."
-          kubectl wait --for=condition=Ready nodes --all --timeout=180s || true
+          kubectl wait --for=condition=Ready nodes --all --timeout=120s || true
+          kubectl wait --for=condition=Ready pods --all -n kube-system --timeout=120s || true
 
-          echo "Waiting for kube-system pods to be ready..."
-          for i in {1..30}; do
-            READY=$(kubectl get pods -n kube-system --no-headers 2>/dev/null | awk '{print $3}' | grep -c "^Running$" || true)
-            TOTAL=$(kubectl get pods -n kube-system --no-headers 2>/dev/null | wc -l || true)
-            echo "kube-system pods Running: $READY / $TOTAL"
-            if [ "$TOTAL" -gt 0 ] && [ "$READY" -ge 2 ]; then
-              echo "System pods are running."
-              break
-            fi
-            sleep 10
-          done
-          kubectl get pods -n kube-system || true
-          kubectl get nodes || true
-
-      - name: Load Docker images into Kind cluster
+      # --- Load Docker images into Kind ---
+      - name: Pull & Load Docker images
         run: |
+          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/filesure-api:latest || true
+          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/filesure-worker:latest || true
           kind load docker-image ${{ secrets.DOCKERHUB_USERNAME }}/filesure-api:latest --name filesure-cluster || true
           kind load docker-image ${{ secrets.DOCKERHUB_USERNAME }}/filesure-worker:latest --name filesure-cluster || true
 
+      # --- Namespaces & Secrets ---
       - name: Create namespaces
         run: |
           kubectl create namespace filesure --dry-run=client -o yaml | kubectl apply -f -
           kubectl create namespace keda --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Create Secrets in filesure namespace
+      - name: Create Secrets
         run: |
-          kubectl create secret generic filesure-secrets -n filesure \
-            --from-literal=mongo-uri=${{ secrets.MONGO_URI }} \
-            --from-literal=aws-access-key-id=${{ secrets.AWS_ACCESS_KEY_ID }} \
-            --from-literal=aws-secret-access-key=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
-            --from-literal=aws-region=${{ secrets.AWS_REGION }} \
-            --from-literal=aws-bucket-name=${{ secrets.AWS_BUCKET_NAME }} \
-            --dry-run=client -o yaml | kubectl apply -f -
+          for ns in filesure keda; do
+            kubectl create secret generic filesure-secrets -n $ns \
+              --from-literal=mongo-uri=${{ secrets.MONGO_URI }} \
+              --from-literal=aws-access-key-id=${{ secrets.AWS_ACCESS_KEY_ID }} \
+              --from-literal=aws-secret-access-key=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
+              --from-literal=aws-region=${{ secrets.AWS_REGION }} \
+              --from-literal=aws-bucket-name=${{ secrets.AWS_BUCKET_NAME }} \
+              --dry-run=client -o yaml | kubectl apply -f -
+          done
 
-      - name: Create Secrets in keda namespace
-        run: |
-          kubectl create secret generic filesure-secrets -n keda \
-            --from-literal=mongo-uri=${{ secrets.MONGO_URI }} \
-            --from-literal=aws-access-key-id=${{ secrets.AWS_ACCESS_KEY_ID }} \
-            --from-literal=aws-secret-access-key=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
-            --from-literal=aws-region=${{ secrets.AWS_REGION }} \
-            --from-literal=aws-bucket-name=${{ secrets.AWS_BUCKET_NAME }} \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-      # --- Install Helm (needed for KEDA via Helm) ---
+      # --- Helm + KEDA ---
       - name: Install Helm
         uses: azure/setup-helm@v4
         with:
           version: v3.15.2
 
-      # --- Install KEDA via Helm (v2.15.0) ---
+      - name: Cache Helm repo
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/helm
+          key: ${{ runner.os }}-helm
+
       - name: Install KEDA via Helm
         run: |
-          echo "Installing KEDA with Helm v2.15.0..."
-          kubectl create namespace keda --dry-run=client -o yaml | kubectl apply -f -
           helm repo add kedacore https://kedacore.github.io/charts
           helm repo update
-          # If keda already exists, attempt upgrade (idempotent)
-          if helm ls -n keda | grep -q "^keda"; then
-            helm upgrade keda kedacore/keda --namespace keda --version 2.15.0 || true
-          else
-            helm install keda kedacore/keda --namespace keda --version 2.15.0
-          fi
+          helm upgrade --install keda kedacore/keda --namespace keda --version 2.15.0
+          kubectl rollout status deployment/keda-operator -n keda --timeout=180s || true
 
-          echo "Waiting for KEDA operator..."
-          kubectl rollout status deployment/keda-operator -n keda --timeout=300s || true
-
-          # extra safety: wait for core KEDA CRDs to be present
-          for crd in scaledobjects.keda.sh scaledjobs.keda.sh triggerauthentications.keda.sh; do
-            echo "Waiting for CRD: $crd"
-            for i in {1..30}; do
-              if kubectl get crd "$crd" >/dev/null 2>&1; then
-                kubectl wait --for=condition=Established crd/$crd --timeout=120s || true
-                break
-              fi
-              sleep 5
-            done
-          done
-          kubectl get pods -n keda || true
-
-      - name: Deploy to Kubernetes (manifests + KEDA resources)
+      # --- Deploy Manifests ---
+      - name: Deploy to Kubernetes
         run: |
-          echo "Applying Kubernetes manifests..."
           kubectl apply -f kubernetes/namespace.yml
           kubectl apply -f kubernetes/mongodb.yml -n filesure
           kubectl apply -f kubernetes/api.yml -n filesure
@@ -205,20 +193,14 @@ jobs:
           kubectl apply -f kubernetes/prometheus.yml -n filesure
           kubectl apply -f kubernetes/mongodb-exporter.yml -n filesure
           kubectl apply -f kubernetes/worker-service.yml -n filesure
-
-          # KEDA resources (safe to apply after Helm install above)
           kubectl apply -f keda/trigger-auth.yml -n filesure
           kubectl apply -f keda/worker-scaledjob.yml -n filesure
 
-          echo "Waiting for key deployments (non-fatal waits)..."
-          kubectl rollout status deployment/api -n filesure --timeout=300s || true
-          kubectl rollout status deployment/prometheus -n filesure --timeout=300s || true
+          kubectl rollout status deployment/api -n filesure --timeout=120s || true
+          kubectl rollout status deployment/prometheus -n filesure --timeout=120s || true
 
       - name: Verify deployment
         run: |
-          echo "Checking deployment status..."
           kubectl get all -n filesure || true
           kubectl get scaledjob -n filesure || true
-          kubectl get scaledobject -n filesure || true
-          kubectl get triggerauthentications -n filesure || true
           kubectl get pods -n keda || true
