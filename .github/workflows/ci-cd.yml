@@ -27,7 +27,7 @@ jobs:
       - name: Build and push API image
         uses: docker/build-push-action@v6
         with:
-          context: ./api
+          context: .  # Use root directory as context
           file: ./api/Dockerfile
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/filesure-api:latest
@@ -37,7 +37,7 @@ jobs:
       - name: Build and push Worker image
         uses: docker/build-push-action@v6
         with:
-          context: ./worker
+          context: .  # Use root directory as context
           file: ./worker/Dockerfile
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/filesure-worker:latest
