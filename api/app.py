@@ -36,7 +36,10 @@ except Exception as e:
 # Prometheus metrics
 REQUEST_COUNT = Counter('requests_total', 'Total number of requests')
 REQUEST_FAILS = Counter('db_write_failures', 'Number of DB write failures')
-REQUEST_TIME = Summary('request_duration_seconds', 'Time spent processing request')
+REQUEST_TIME = Summary(
+    'request_duration_seconds',
+    'Time spent processing request'
+)
 JOBS_CREATED = Counter('jobs_created_total', 'Total number of jobs created', ['num_jobs'])
 JOBS_CREATED_FAILURES = Counter('jobs_created_failures', 'Number of job creation failures')
 MONGODB_OPERATIONS = Counter('mongodb_operations_total', 'Total MongoDB operations', ['operation'])
@@ -315,8 +318,8 @@ def submit():
             result = collection.insert_one(job_doc)
             mongo_time = time.time() - start_time
 
-            MONGODB_OPERATIONS.labels(operation='insert_one').inc()
-            MONGODB_OPERATION_TIME.labels(operation='insert_one').observe(mongo_time)
+            MONGODB_OPERATIONS.labels(operation="insert_one").inc()
+            MONGODB_OPERATION_TIME.labels(operation="insert_one").observe(mongo_time)
 
             created_jobs.append({
                 "jobId": str(result.inserted_id),
@@ -342,7 +345,7 @@ def submit():
 @app.route("/metrics")
 def metrics():
     """Expose Prometheus metrics"""
-    return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
+    return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
 
 
 if __name__ == "__main__":
