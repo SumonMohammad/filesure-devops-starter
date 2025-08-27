@@ -1,3 +1,67 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: filesure
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+      evaluation_interval: 5s
+    scrape_configs:
+    - job_name: 'api'
+      metrics_path: /metrics
+      static_configs:
+      - targets: ['api.filesure.svc.cluster.local:5001']
+    - job_name: 'worker'
+      metrics_path: /metrics
+      static_configs:
+      - targets: ['pushgateway.filesure.svc.cluster.local:9091']
+    - job_name: 'mongodb-exporter'
+      static_configs:
+      - targets: ['mongodb-exporter-prometheus-mongodb-exporter.filesure.svc.cluster.local:9216']
+    rule_files:
+    - /etc/prometheus/alerts.yml
+
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-alerts
+  namespace: filesure
+data:
+  alerts.yml: |
+    groups:
+    - name: filesure-alerts
+      rules:
+      - alert: HighJobFailureRate
+        expr: rate(jobs_failed_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High job failure rate detected"
+          description: "Job failure rate is {{ $value }} per second over 5 minutes."
+      - alert: HighJobsSkippedRate
+        expr: rate(jobs_skipped_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High job skipped rate detected"
+          description: "Jobs are being skipped at a rate of {{ $value }} per second, possibly due to lock contention."
+      - alert: NoPendingJobs
+        expr: sum(pending_jobs) == 0
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "No pending jobs in queue"
+          description: "No jobs with status 'pending' have been detected for 10 minutes."
+
+---
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,29 +84,21 @@ spec:
         - containerPort: 9090
         volumeMounts:
         - name: prometheus-config
-          mountPath: /etc/prometheus
+          mountPath: /etc/prometheus/prometheus.yml
+          subPath: prometheus.yml
+        - name: prometheus-alerts
+          mountPath: /etc/prometheus/alerts.yml
+          subPath: alerts.yml
       volumes:
       - name: prometheus-config
         configMap:
           name: prometheus-config
+      - name: prometheus-alerts
+        configMap:
+          name: prometheus-alerts
+
 ---
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: prometheus-config
-  namespace: filesure
-data:
-  prometheus.yml: |
-    global:
-      scrape_interval: 15s
-    scrape_configs:
-    - job_name: 'worker'
-      static_configs:
-      - targets: ['worker:9100']
-    - job_name: 'mongodb-exporter'
-      static_configs:
-      - targets: ['mongodb-exporter-prometheus-mongodb-exporter:9216']
----
+
 apiVersion: v1
 kind: Service
 metadata:
@@ -52,6 +108,45 @@ spec:
   ports:
   - port: 9090
     targetPort: 9090
+    protocol: TCP
   selector:
     app: prometheus
-  type: LoadBalancer
+  type: ClusterIP
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pushgateway
+  namespace: filesure
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pushgateway
+  template:
+    metadata:
+      labels:
+        app: pushgateway
+    spec:
+      containers:
+      - name: pushgateway
+        image: prom/pushgateway:latest
+        ports:
+        - containerPort: 9091
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: pushgateway
+  namespace: filesure
+spec:
+  ports:
+  - port: 9091
+    targetPort: 9091
+    protocol: TCP
+  selector:
+    app: pushgateway
+  type: ClusterIP

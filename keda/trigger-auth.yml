@@ -1,0 +1,11 @@
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: mongodb-trigger-auth
+  namespace: filesure
+spec:
+  secretTargetRef:
+  - parameter: connectionString
+    name: filesure-secrets
+    key: mongo-uri
+  

@@ -1,3 +1,5 @@
+
+#Last worked version of the file before deletion
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
 metadata:
@@ -7,41 +9,52 @@ spec:
   jobTargetRef:
     template:
       spec:
+        restartPolicy: Never
         containers:
         - name: worker
           image: filesure-worker:latest
-          imagePullPolicy: Never
-          command: ["python", "-u", "worker/downloader.py", "$(job_id)"]
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-u", "worker/downloader.py"]
           env:
-          - name: job_id
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.labels['job-id']
           - name: MONGO_URI
-            value: "mongodb://mongodb:27017"
+            valueFrom:
+              secretKeyRef:
+                name: filesure-secrets
+                key: mongo-uri
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
               secretKeyRef:
-                name: aws-credentials
-                key: access-key
+                name: filesure-secrets
+                key: aws-access-key-id
           - name: AWS_SECRET_ACCESS_KEY
             valueFrom:
               secretKeyRef:
-                name: aws-credentials
-                key: secret-key
-          - name: S3_BUCKET
-            value: "filesure-documents"
-          restartPolicy: OnFailure
+                name: filesure-secrets
+                key: aws-secret-access-key
+          - name: AWS_REGION
+            valueFrom:
+              secretKeyRef:
+                name: filesure-secrets
+                key: aws-region
+          - name: AWS_BUCKET_NAME
+            valueFrom:
+              secretKeyRef:
+                name: filesure-secrets
+                key: aws-bucket-name
+          ports:  # Added for explicit exposure
+          - containerPort: 9100
+            name: metrics
   triggers:
-  - type: prometheus
+  - type: mongodb
     metadata:
-      serverAddress: http://prometheus.filesure.svc.cluster.local:9090
-      metricName: mongodb_top_total_count
-      query: sum(mongodb_top_total_count{collection="jobs",database="filesure"}) > 0
-      threshold: "1"
-      activationThreshold: "0"
-  scalingStrategy:
-    strategy: "default"
-  pollingInterval: 30
-  minReplicaCount: 0
+      dbName: filesure
+      collection: jobs
+      query: '{"jobStatus": "pending"}'
+      queryValue: "1"
+      activationQueryValue: "0"
+    authenticationRef:
+      name: mongodb-trigger-auth
   maxReplicaCount: 10
+  pollingInterval: 5
+  successfulJobsHistoryLimit: 10  # Increased to retain more for debugging
+  failedJobsHistoryLimit: 10  # Increased to retain more for debugging

@@ -25,15 +25,17 @@ spec:
       - name: mongodb-data
         emptyDir: {}  # Use persistent volume for production
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: mongodb
-  namespace: filesure
-spec:
-  ports:
-  - port: 27017
-    targetPort: 27017
-  selector:
-    app: mongodb
-  clusterIP: None  # Headless service for direct pod access
+
+  apiVersion: v1
+  kind: Service
+  metadata:
+    name: mongodb
+    namespace: filesure
+  spec:
+    selector:
+      app: mongodb
+    ports:
+    - protocol: TCP
+      port: 27017
+      targetPort: 27017
+    type: ClusterIP

@@ -1,0 +1,40 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-exporter-prometheus-mongodb-exporter
+  namespace: filesure
+spec:
+  selector:
+    app: prometheus-mongodb-exporter
+  ports:
+  - protocol: TCP
+    port: 9216
+    targetPort: 9216
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb-exporter
+  namespace: filesure
+  labels:
+    app: prometheus-mongodb-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus-mongodb-exporter
+  template:
+    metadata:
+      labels:
+        app: prometheus-mongodb-exporter
+    spec:
+      containers:
+      - name: mongodb-exporter
+        image: percona/mongodb_exporter:0.39
+        imagePullPolicy: IfNotPresent
+        args:
+        - --mongodb.uri=mongodb://mongodb.filesure.svc.cluster.local:27017
+        ports:
+        - containerPort: 9216
+          name: metrics

@@ -1,0 +1,11 @@
+groups:
+- name: filesure-alerts
+  rules:
+  - alert: HighJobFailureRate
+    expr: rate(jobs_failed_total[5m]) > 0.1
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "High job failure rate detected"
+      description: "Job failure rate is {{ $value }} per second."

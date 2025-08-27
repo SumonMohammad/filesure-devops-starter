@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker-scaledjob
+  namespace: filesure
+spec:
+  ports:
+  - port: 9100
+    targetPort: 9100
+    protocol: TCP
+    name: metrics  # Added name for better SD filtering
+  selector:
+    scaledjob.keda.sh/name: worker-scaledjob
+  clusterIP: None

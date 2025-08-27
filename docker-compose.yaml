@@ -1,4 +1,3 @@
-
 services:
   mongodb:
     image: mongo
@@ -25,27 +24,12 @@ services:
     networks:
       - filesure-network
 
-  worker:
-    build:
-      context: .
-      dockerfile: worker/Dockerfile
-    image: filesure-worker
-    container_name: filesure-worker
-    ports:
-      - "9100:9100"
-    env_file:
-      - .env
-    environment:
-      - MONGO_URI=mongodb://mongodb:27017
-    command: python -u worker/downloader.py  # Run script, -u for unbuffered output
-    networks:
-      - filesure-network
-
   prometheus:
     image: prom/prometheus:latest
     container_name: filesure-prometheus
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml
     ports:
       - "9090:9090"
     networks:
