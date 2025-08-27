@@ -82,6 +82,15 @@ jobs:
           cluster_name: filesure-cluster
           config: kubernetes/kind-config.yaml
 
+      - name: Debug KUBECONFIG
+        run: |
+          echo "Checking KUBECONFIG file contents:"
+          cat ~/.kube/config || echo "KUBECONFIG file not found"
+          echo "Listing available kubectl contexts:"
+          kubectl config get-contexts
+        env:
+          KUBECONFIG: ~/.kube/config
+
       - name: Verify Kind cluster
         run: |
           echo "Checking Kind clusters..."
@@ -91,6 +100,8 @@ jobs:
             kind export logs --name filesure-cluster || echo "No logs available"
             exit 1
           fi
+          echo "Setting kubectl context..."
+          kubectl config use-context kind-filesure-cluster
           echo "Waiting for Kind cluster to be ready..."
           kubectl cluster-info --context kind-filesure-cluster
           kubectl wait --for=condition=ready node --all --timeout=120s
