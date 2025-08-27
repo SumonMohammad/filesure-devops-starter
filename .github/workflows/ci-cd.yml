@@ -164,7 +164,7 @@ jobs:
           kubectl apply -f kubernetes/prometheus.yml -n filesure
           kubectl apply -f kubernetes/mongodb-exporter.yml -n filesure
           kubectl apply -f kubernetes/worker-service.yml -n filesure
-          kubectl apply -f keda/trigger-auth.yaml -n filesure
+          kubectl apply -f keda/trigger-auth.yml -n filesure
           kubectl apply -f keda/worker-scaledjob.yml -n filesure
 
           echo "Waiting for deployments..."
