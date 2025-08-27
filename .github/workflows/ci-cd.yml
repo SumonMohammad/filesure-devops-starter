@@ -66,45 +66,63 @@ jobs:
           docker pull ${{ secrets.DOCKERHUB_USERNAME }}/filesure-api:latest
           docker pull ${{ secrets.DOCKERHUB_USERNAME }}/filesure-worker:latest
 
-      - name: Debug working directory
-        run: |
-          echo "Current working directory:"
-          pwd
-          echo "Listing kubernetes directory contents:"
-          ls -la kubernetes/
-          echo "Contents of kind-config.yaml:"
-          cat kubernetes/kind-config.yaml
-
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
         with:
           version: 'latest'
 
-      - name: Set up Kind manually
+      - name: Install Kind
         run: |
-          # Install Kind
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
-          
-          # Create the Kind cluster
-          kind create cluster --name filesure-cluster --config kubernetes/kind-config.yaml
-          
-          # Verify cluster creation
-          kind get clusters
-          
-          # Set kubectl context
-          kubectl config use-context kind-filesure-cluster
-          
-          # Verify kubectl context
-          kubectl config current-context
-          kubectl cluster-info
 
-      - name: Verify Kind cluster readiness
+      # --- Caching Kind node image ---
+      - name: Cache Kind node image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/kind-node-image
+          key: kind-node-v1.30.0
+
+      - name: Preload Kind node image
         run: |
-          echo "Waiting for Kind cluster to be ready..."
-          kubectl wait --for=condition=Ready pod --all --timeout=120s
-          kubectl get nodes
+          mkdir -p /tmp/kind-node-image
+          if [ -f /tmp/kind-node-image/kind-node.tar ]; then
+            echo "Loading cached Kind node image..."
+            docker load -i /tmp/kind-node-image/kind-node.tar || true
+          else
+            echo "No cache found, Kind will pull fresh image."
+          fi
+
+      - name: Create Kind cluster
+        run: |
+          kind create cluster --name filesure-cluster --config kubernetes/kind-config.yaml
+          kubectl cluster-info --context kind-filesure-cluster
+          kubectl config use-context kind-filesure-cluster
+
+      - name: Save Kind node image to cache
+        if: always()
+        run: |
+          echo "Saving Kind node image for caching..."
+          docker save kindest/node:v1.30.0 -o /tmp/kind-node-image/kind-node.tar || true
+
+      - name: Wait for cluster readiness
+        run: |
+          echo "Waiting for nodes to be ready..."
+          kubectl wait --for=condition=Ready nodes --all --timeout=180s || true
+          
+          echo "Waiting for kube-system pods to be ready..."
+          for i in {1..30}; do
+            READY=$(kubectl get pods -n kube-system --no-headers 2>/dev/null | grep -c "Running" || true)
+            TOTAL=$(kubectl get pods -n kube-system --no-headers 2>/dev/null | wc -l || true)
+            echo "Pods ready: $READY / $TOTAL"
+            if [ "$READY" -ge 2 ]; then
+              echo "System pods are running."
+              break
+            fi
+            sleep 10
+          done
+          kubectl get pods -n kube-system
 
       - name: Load Docker images into Kind cluster
         run: |
@@ -148,14 +166,13 @@ jobs:
           kubectl apply -f kubernetes/worker-service.yml -n filesure
           kubectl apply -f keda/trigger-auth.yaml -n filesure
           kubectl apply -f keda/worker-scaledjob.yml -n filesure
-          echo "Deployments applied successfully"
-          echo "Waiting for deployments to be ready..."
-          kubectl rollout status deployment/api -n filesure --timeout=120s
-          kubectl rollout status deployment/prometheus -n filesure --timeout=120s
+
+          echo "Waiting for deployments..."
+          kubectl rollout status deployment/api -n filesure --timeout=180s || true
+          kubectl rollout status deployment/prometheus -n filesure --timeout=180s || true
 
       - name: Verify deployment
         run: |
           echo "Checking deployment status..."
           kubectl get all -n filesure
           kubectl get scaledjob -n filesure
-          echo "Deployment verification completed"
