@@ -1,231 +1,158 @@
 # FileSure DevOps Simulation
 
-This project simulates a **document download processing system** with job queuing, processing, and monitoring capabilities. It demonstrates a real-world scenario where documents need to be downloaded in batches with progress tracking.
+This project simulates a **document download processing system** with job queuing, processing, monitoring, and auto-scaling capabilities on **Kubernetes**.  
+It demonstrates a real-world workflow where documents are downloaded in batches, stored in cloud storage, and tracked in a database with monitoring dashboards.
 
 ---
 
-## 🏗️ System Architecture
+## System Architecture
 
 ### **API Service (`api/app.py`)**
+- Web UI at `http://localhost:5001` for creating jobs  
+- REST API to create 1–10 jobs with random company data  
+- MongoDB integration for job state  
+- Prometheus metrics on `/metrics`
 
-- **Web Interface**: Beautiful UI at `http://localhost:5001` for creating test jobs
-- **Job Creation**: REST API endpoint to create 1-10 jobs with random company data
-- **MongoDB Integration**: Stores jobs with CIN numbers, company names, and processing status
-- **Prometheus Metrics**: `/metrics` endpoint for monitoring request counts and failures
+### **Worker Service (`worker/downloader.py`)**
+- Processes a single job (KEDA scaled per job)  
+- Acquires job lock in MongoDB (no duplicate processing)  
+- Simulates document downloads (35% per run, 30–50 total docs)  
+- Uploads files to **AWS S3 (via secrets)**  
+- Tracks metadata in MongoDB  
+- Prometheus metrics on port `9100`
 
-### **Downloader Worker (`worker/downloader.py`)**
-
-- **Job Processing**: Processes a single job by ID and exits (KEDA-friendly)
-- **Request-Based**: Accepts job ID via command line or environment variable
-- **Scaling Ready**: Perfect for KEDA-based scaling (one pod per job)
-- **Fault Tolerant**: Job locking prevents conflicts, automatic cleanup of expired locks
-- **Azure Blob Storage**: Uploads downloaded documents as text files to Azure Blob Storage
-- **Document Tracking**: Saves document metadata to MongoDB documents collection
-- **Realistic Simulation**: Downloads 35% of documents per run, with 30-50 total documents per job
-
----
-
-## 🎯 Key Features
-
-### **Job Management**
-
-- **Random Data Generation**: Creates realistic CIN numbers and company names
-- **Status Tracking**: Jobs progress through `pending` → `processing` → `in_progress` → `completed`
-- **Progress Monitoring**: Real-time updates on document download progress
-- **Document Processing**: Generates realistic text files with company information
-- **Dual Storage**: Documents stored in Azure Blob Storage + metadata in MongoDB
-
-### **Scalability & Reliability**
-
-- **Job Locking**: Prevents multiple workers from processing the same job
-- **Auto-Recovery**: Expired locks are automatically cleaned up
-- **Horizontal Scaling**: Multiple worker instances can run simultaneously
-- **Fault Tolerance**: Failed containers don't block the entire system
-
-### **Monitoring & Observability**
-
-- **Comprehensive Metrics**: 15+ Prometheus metrics across API and worker
-- **Multi-Service Monitoring**: Separate metrics endpoints (API:5001, Worker:9100)
-- **Blob Storage Metrics**: Upload counts, operation times, success rates
-- **Job Processing Metrics**: Processing times, batch sizes, lock management
-- **Structured Logging**: Detailed logs for debugging and monitoring
-- **Real-time Progress**: Track job status and download progress
+### **Monitoring & Scaling**
+- **Prometheus + Grafana** dashboards for metrics  
+- **KEDA ScaledJob** to auto-scale worker pods per pending job  
+- Structured logs for debugging  
 
 ---
 
-## 📊 Job Processing Flow
-
-### **Job Creation**
-
-1. User creates jobs via web interface or API
-2. Jobs stored in MongoDB `jobs` collection with `pending` status
-3. Each job gets random CIN and company name
-4. System creates `documents` collection for tracking downloaded files
-
-### **Job Processing**
-
-1. KEDA detects pending job and triggers worker pod
-2. Worker acquires lock on specific job ID
-3. First run: Sets random total documents (30-50)
-4. Downloads 35% of documents per run
-5. **For each document:**
-   - Generates realistic text file content
-   - Uploads to Azure Blob Storage as `.txt` file
-   - Saves document metadata to MongoDB documents collection
-   - Updates progress in real-time
-6. Releases lock when done or sets back to pending
-7. Worker pod exits (success/failure)
-
-### **Completion**
-
-- Jobs complete after 2-3 runs (depending on total documents)
-- Final status: `completed` with all documents downloaded
-- **Documents stored**: Text files in Azure Blob Storage
-- **Metadata tracked**: Document info in MongoDB `documents` collection
-- Lock fields automatically cleaned up
+##  Key Features
+- Randomized company/job data  
+- Multi-run job lifecycle (`pending → processing → in_progress → completed`)  
+- Batch-based document downloads  
+- Dual storage (AWS S3 + MongoDB metadata)  
+- Fault tolerance (lock expiry + recovery)  
+- Kubernetes-native auto-scaling with KEDA  
+- Monitoring with 15+ custom metrics  
 
 ---
 
-## 🛠️ Technology Stack
+##  Prerequisites
 
-- **Backend**: Python Flask
-- **Database**: MongoDB
-- **Cloud Storage**: Azure Blob Storage
-- **Monitoring**: Prometheus metrics
-- **Job Processing**: Custom worker with locking mechanism
-- **Frontend**: Simple HTML/CSS/JavaScript interface
+Before running the system, make sure you have installed:
 
----
+- **[Docker](https://docs.docker.com/get-docker/)** (latest)  
+- **[Kind](https://kind.sigs.k8s.io/)** (Kubernetes in Docker)  
+- **[kubectl](https://kubernetes.io/docs/tasks/tools/)**  
+- **[Helm](https://helm.sh/docs/intro/install/)**  
+- **git**  
 
-## 🚀 Getting Started
-
-### **Prerequisites**
-
-- Python 3.9+
-- MongoDB (local or remote)
-- Required packages (see `requirements.txt`)
-
-### **Environment Variables**
-
-- `MONGO_URI`: MongoDB connection string (defaults to `mongodb://localhost:27017`)
-- `AZURE_BLOB_CONN`: Azure Blob Storage connection string
-- `AZURE_CONTAINER`: Azure Blob Storage container name (defaults to `documents`)
-- `JOB_ID`: Job ID for worker processing (set by KEDA or manually for testing)
-
-See `env.example` for all available environment variables.
-
-### **Running the System Locally**
-
-1. Start MongoDB
-2. Run API: `cd api && python app.py`
-3. Create jobs via web interface: `http://localhost:5001`
-4. Run Worker for specific job: `cd worker && python downloader.py <job_id>`
-   - Example: `python downloader.py 68a6b73df6d117b0aeaa695e`
-   - Or: `JOB_ID=68a6b73df6d117b0aeaa695e python downloader.py`
-
-### **Containerization**
-
-This project provides the application code only. You will need to:
-
-- Create Dockerfiles for both API and worker services
-- Set up docker-compose.yml for local development
-- Implement Kubernetes manifests for production deployment
-- Configure CI/CD pipelines for automated deployment
+>  AWS credentials in the script are placeholders. Replace them with valid credentials for your S3 bucket before deployment.  
 
 ---
 
-## 📈 Monitoring
+##  Getting Started
 
-### **Prometheus Metrics**
+### 1. Clone the repository
+```bash
+git clone https://github.com/yourusername/filesure-devops-starter.git
+cd filesure-devops-starter
 
-**API Metrics (`/metrics` on port 5001):**
+#2. Run the create-cluster-service.sh  script
 
-- `requests_total`: Total API requests
-- `db_write_failures`: Database write failures
-- `request_duration_seconds`: Request processing time
-- `jobs_created_total{num_jobs="X"}`: Jobs created by batch size
-- `jobs_created_failures`: Job creation failures
-- `mongodb_operations_total{operation="insert_one"}`: MongoDB operations
-- `mongodb_operation_duration_seconds{operation="insert_one"}`: MongoDB operation time
+* This script sets up everything automatically:
 
-**Worker Metrics (`/metrics` on port 9100):**
+* Creates a Kind cluster
 
-- `jobs_processed_total{status="completed|pending"}`: Jobs processed by status
-- `jobs_found_total`: Jobs found in each cycle
-- `jobs_locked_total`: Successfully locked jobs
-- `jobs_failed_total`: Failed job processing
-- `documents_downloaded_total`: Total documents downloaded
-- `documents_uploaded_total`: Total documents uploaded to blob storage
-- `blob_operations_total{operation="upload"}`: Blob storage operations
-- `blob_operation_duration_seconds{operation="upload"}`: Blob operation times
-- `job_processing_duration_seconds`: Job processing time
-- `lock_cleanup_total`: Expired locks cleaned up
-- `active_jobs`: Currently processing jobs (Gauge)
-- `pending_jobs`: Jobs waiting to be processed (Gauge)
-- `completed_jobs`: Completed jobs (Gauge)
-- `download_batch_size`: Documents per batch (Histogram)
+* Installs KEDA via Helm
 
-### **MongoDB Queries**
+* Builds API + Worker Docker images
 
-**Jobs Collection:**
+* Loads images into the Kind cluster
 
-- Find pending jobs: `{"jobStatus": "pending"}`
-- Find processing jobs: `{"jobStatus": "processing"}`
-- Find completed jobs: `{"jobStatus": "completed"}`
+* Applies all Kubernetes manifests (API, worker, MongoDB, Prometheus, Grafana, exporters)
 
-**Documents Collection:**
+* Creates secrets for MongoDB + AWS S3
 
-- Find documents by job: `{"jobId": ObjectId("...")}`
-- Find documents by company: `{"companyName": "COMPANY NAME"}`
-- Find documents by type: `{"documentType": "Annual Report"}`
+* Starts port-forwarding for services
 
----
+`chmod +x create-cluster-service.sh
+./create-cluster-service.sh
+`
+# 3. Verify cluster status
 
-## 🔧 System Design Decisions
+`kubectl get pods -n filesure`
 
-### **Job Locking Strategy**
+* You should see API, MongoDB, Prometheus, Grafana, and worker pods running.
 
-- Uses MongoDB's `findOneAndUpdate` for atomic operations
-- Prevents race conditions between multiple workers
-- Automatic lock expiration prevents stuck jobs
 
-### **Document Processing Strategy**
+# Accessing the Services
 
-- **Text Files**: Realistic document content instead of JSON
-- **Dual Storage**: Files in Azure Blob Storage, metadata in MongoDB
-- **Rich Metadata**: Document type, size, checksum, blob URL tracking
-- **Organized Structure**: `jobs/{job_id}/document_{number}.txt` blob paths
+* API Web UI: http://localhost:5001
+* Prometheus: http://localhost:9090
+* Grafana: http://localhost:3000
+    * Default login: admin / admin
 
-### **Progress Simulation**
 
-- 35% progress per run ensures realistic batch processing
-- 1-second delay per document simulates real download time
-- Random total documents (30-50) adds variability
+# Monitoring Metrics
+## API (:5001/metrics)
 
-### **Fault Tolerance**
+* Request counts
 
-- Lock cleanup prevents system deadlocks
-- Graceful handling of container failures
-- Automatic job recovery without manual intervention
-- Azure Blob Storage fallback (works without Azure configured)
+* Request durations
 
----
+* Database failures
 
-This simulation provides a realistic foundation for testing containerization, orchestration, and monitoring solutions in a production-like environment.
+* Job creation stats
 
----
 
-## 📋 Project Structure
+## Worker (:9100/metrics)
 
-```
-filesure-devops-starter/
-├── api/
-│   └── app.py              # Flask API with web interface
-├── worker/
-│   └── downloader.py       # Job processing worker
-├── requirements.txt        # Python dependencies
-├── env.example            # Environment variables template
-└── README.md              # This documentation
-```
+* Jobs processed (by status)
 
-The project contains all the application logic needed to simulate a document processing system. The containerization, orchestration, and deployment infrastructure will be implemented by candidates as part of their assignment.
+* Lock statistics
+
+* Documents uploaded
+
+* Blob operation timings
+
+* Download batch sizes
+
+
+# Deployment Workflow (Automated by Script)
+
+1. Kind cluster created with config (kubernetes/kind-config.yml)
+
+2. KEDA installed in keda namespace
+
+3. Docker images built and loaded into Kind cluster
+
+4. Secrets (filesure-secrets) created for MongoDB + AWS credentials
+
+5. Kubernetes manifests applied for API, worker, MongoDB, Prometheus, Grafana, exporters
+
+6. Port-forwarding started (API, Grafana, Prometheus)
+
+7. Test jobs auto-created for demonstration
+
+
+
+# Notes
+
+* Replace AWS credentials in create-cluster-service.sh before real use
+
+* MongoDB connection is internal:
+
+ `mongodb.filesure.svc.cluster.local:27017`
+
+* Check logs with:
+
+  `kubectl logs -n filesure <pod-name>`
+
+  `kubectl get pods -n filesure -l scaledjob.keda.sh/name=worker-scaledjob -w`
+
+* Tear down the cluster with:
+
+  `kind delete cluster --name filesure-cluster`
