@@ -59,6 +59,7 @@ Before running the system, make sure you have installed:
 ```bash
 git clone https://github.com/yourusername/filesure-devops-starter.git
 cd filesure-devops-starter
+```
 
 #2. Run the create-cluster-service.sh  script
 
